@@ -12,6 +12,7 @@
 - **[always paste]** Only output the files explicitly listed in the prompt's "output every file in full" instruction (or, for a fix prompt, only the specific broken file). Do not regenerate, restate, or "helpfully" touch any file not named.
 - Do not add endpoints, fields, DTOs, dependencies, or configuration beyond what's explicitly specified in the current prompt — even if it seems like an obvious or small addition. If something looks missing, flag it back to me in your response rather than adding it silently.
 - Do not implement a feature from a later version ahead of schedule (e.g. don't add JWT while building v1's user-service just because "it's more secure" — v1's user-service is intentionally using a simple in-memory session, and that's a stated, deliberate choice, not an oversight to correct).
+- **[always paste]** Every service's project (pom.xml, Spring Boot version, Spring Cloud version, all dependencies) is generated in advance via Spring Initializr, not by the AI. Never modify, add to, or remove anything from pom.xml, and never suggest a new dependency — if a dependency genuinely seems to be missing, say so and stop, don't add it yourself. Only write application code and configuration (`application.yml`, Java classes, templates) on top of the existing project structure.
 
 ## 2. Consistency rules
 

@@ -2,40 +2,29 @@
 
 > Paste everything in the code block below directly into Amazon Q as a single prompt.
 > This service is self-contained — it does not call any other service.
+> Assumes the project was already generated via Spring Initializr per the settings above.
 
 ```
-Create a Spring Boot microservice from scratch called product-service.
+I have already generated this Spring Boot project via Spring Initializr with the following settings — do not modify, add, or remove anything in pom.xml, and do not change the Spring Boot or Spring Cloud version:
 
-PROJECT SETUP:
-- Build tool: Maven
-- Java version: 17
-- Spring Boot version: 3.2.x
-- Group: com.ecommerce
-- Artifact: product-service
-- Package: com.ecommerce.productservice
-- Packaging: Jar
+- Spring Boot 4.1.0, Spring Cloud release train 2025.1.2 (already configured in pom.xml)
+- Group: com.ecommerce, Artifact: product-service, Package: com.ecommerce.productservice
+- Dependencies present: Spring Web, Spring Data JPA, Validation, Eureka Discovery Client, PostgreSQL Driver, Lombok
+- Configuration format: application.yml (already exists, currently empty/default)
 
-DEPENDENCIES (pom.xml):
-- spring-boot-starter-web
-- spring-boot-starter-data-jpa
-- spring-boot-starter-validation
-- spring-cloud-starter-netflix-eureka-client
-- Spring Cloud version: 2023.0.x (compatible with Spring Boot 3.2.x) — add spring-cloud-dependencies BOM in dependencyManagement
-- postgresql (runtime scope, official PostgreSQL JDBC driver)
-- lombok (optional scope)
+Your task is ONLY to write the application logic and configuration on top of this existing project. Do not touch pom.xml. Do not suggest adding any dependency beyond what's listed above.
 
 MAIN APPLICATION CLASS:
-- Class name: ProductServiceApplication
-- Location: com.ecommerce.productservice
+- File: src/main/java/com/ecommerce/productservice/ProductServiceApplication.java
 - Annotations: @SpringBootApplication, @EnableDiscoveryClient
 
 CONFIGURATION FILE:
 - File: src/main/resources/application.yml
 - server.port: 8081
 - spring.application.name: product-service
-- spring.datasource.url: jdbc:postgresql://localhost:5432/ecommerce_db?currentSchema=product_schema
+- spring.datasource.url: jdbc:postgresql://localhost:5432/project_db?currentSchema=product_schema
 - spring.datasource.username: postgres
-- spring.datasource.password: postgres
+- spring.datasource.password: root
 - spring.jpa.hibernate.ddl-auto: update
 - spring.jpa.properties.hibernate.default_schema: product_schema
 - spring.jpa.show-sql: true
@@ -55,7 +44,7 @@ Entity: Product
 - price: BigDecimal, @NotNull, @DecimalMin(value = "0.01")
 - stockQuantity: Integer, @NotNull, @Min(0)
 - categoryId: Long, @NotNull — plain column, NOT a @ManyToOne relationship, no object navigation to Category
-- createdAt: LocalDateTime — set only inside a @PrePersist method, must never be settable via the JSON request body (exclude it from any constructor/setter path a client could reach — use @Column(updatable = false) and set it in @PrePersist)
+- createdAt: LocalDateTime — set only inside a @PrePersist method, must never be settable via the JSON request body (use @Column(updatable = false) and set it in @PrePersist)
 
 Use Lombok @Getter @Setter @NoArgsConstructor @AllArgsConstructor on both entities. Do not add a @Builder unless needed elsewhere in the code you generate.
 
@@ -91,11 +80,11 @@ EXCEPTION HANDLING (package: com.ecommerce.productservice.exception):
 
 CONSTRAINTS:
 - Do not add a Category → Product @OneToMany relationship or any JPA object-level relationship anywhere in this service — categoryId stays a plain Long column as specified.
-- Do not add Spring Security, Swagger/OpenAPI, or any dependency beyond what is listed above.
+- Do not add Spring Security, Swagger/OpenAPI, or suggest any dependency beyond what's already present in pom.xml.
 - Do not add a service/business layer beyond what's implied above — controllers may call repositories directly for this version.
 - Do not add any endpoints beyond the ones listed above.
 - Do not add DTOs unless explicitly specified above (the stock PATCH body is the one exception — that needs a small request DTO/record).
-- Output every file in full: pom.xml, application.yml, both entities, both repositories, both controllers, both custom exception classes plus InsufficientStockException, and GlobalExceptionHandler.
+- Output every file in full: application.yml, both entities, both repositories, both controllers, both custom exception classes plus InsufficientStockException, and GlobalExceptionHandler. Do NOT output pom.xml — it already exists and must not change.
 
 VERIFICATION (tell me how to confirm this works):
 - List the exact curl or Postman requests to test: create a category, create 2-3 products under it, list products, get one by id, update one, PATCH its stock down until InsufficientStockException triggers, then delete one.

@@ -1,32 +1,24 @@
 # PROMPT 5 — frontend-service, Part A (setup + browsing)
 
 > Paste everything in the code block below directly into Amazon Q as a single prompt.
-> This is Part A of two frontend prompts — this one covers project setup, product-service integration, and the two read-only browsing pages. Part B (Prompt 6) adds register/login/cart/checkout/history on top of this same project.
+> This is Part A of two frontend prompts — this one covers project setup, product-service integration via a Feign client, and the two read-only browsing pages. Part B (Prompt 6) adds register/login/cart/checkout/history on top of this same project.
+> Assumes the project was already generated via Spring Initializr per the settings above.
 > product-service must already be built and running for the verification step, but this prompt itself doesn't need that to generate correctly.
 
 ```
-Create a Spring Boot MVC + Thymeleaf web application from scratch called frontend-service. This is a server-rendered frontend with NO JavaScript — all interactivity is plain HTML forms and links, all pages rendered server-side via Thymeleaf.
+I have already generated this Spring Boot project via Spring Initializr with the following settings — do not modify, add, or remove anything in pom.xml, and do not change the Spring Boot or Spring Cloud version:
 
-PROJECT SETUP:
-- Build tool: Maven
-- Java version: 17
-- Spring Boot version: 3.2.x
-- Group: com.ecommerce
-- Artifact: frontend-service
-- Package: com.ecommerce.frontendservice
-- Packaging: Jar
+- Spring Boot 4.1.0, Spring Cloud release train 2025.1.2 (already configured in pom.xml)
+- Group: com.ecommerce, Artifact: frontend-service, Package: com.ecommerce.frontendservice
+- Dependencies present: Spring Web, Thymeleaf, Eureka Discovery Client, OpenFeign, Spring Cloud LoadBalancer
+- Configuration format: application.yml (already exists, currently empty/default)
+- This is a server-rendered frontend with NO JavaScript — all interactivity is plain HTML forms and links, all pages rendered server-side via Thymeleaf.
 
-DEPENDENCIES (pom.xml):
-- spring-boot-starter-web
-- spring-boot-starter-thymeleaf
-- spring-cloud-starter-netflix-eureka-client
-- spring-cloud-starter-loadbalancer
-- Spring Cloud version: 2023.0.x (compatible with Spring Boot 3.2.x) — add spring-cloud-dependencies BOM in dependencyManagement
+Your task is ONLY to write the application logic, configuration, and templates on top of this existing project. Do not touch pom.xml. Do not suggest adding any dependency beyond what's listed above.
 
 MAIN APPLICATION CLASS:
-- Class name: FrontendServiceApplication
-- Location: com.ecommerce.frontendservice
-- Annotations: @SpringBootApplication, @EnableDiscoveryClient
+- File: src/main/java/com/ecommerce/frontendservice/FrontendServiceApplication.java
+- Annotations: @SpringBootApplication, @EnableDiscoveryClient, @EnableFeignClients
 
 CONFIGURATION FILE:
 - File: src/main/resources/application.yml
@@ -35,24 +27,24 @@ CONFIGURATION FILE:
 - spring.thymeleaf.cache: false — so template edits reload without restarting during development
 - eureka.client.service-url.defaultZone: http://localhost:8761/eureka
 
-REST CLIENT BEAN CONFIGURATION (package: com.ecommerce.frontendservice.config):
-- A @Configuration class exposing a @Bean of type RestClient.Builder, annotated @LoadBalanced, so calls resolve "product-service" through Eureka
-
 DTOs (package: com.ecommerce.frontendservice.dto):
 - ProductResponse: id (Long), name (String), description (String), price (BigDecimal), stockQuantity (Integer), categoryId (Long) — mirrors what product-service returns, used purely to deserialize the response, not persisted anywhere here
+- ProductPageResponse: content (List<ProductResponse>) — product-service's GET /api/products returns a Spring Data Page object, whose JSON shape has the actual list under a "content" key plus pagination metadata fields we don't need; this DTO only needs the "content" field, Jackson will ignore the rest of the page JSON automatically since we're not declaring those other fields
 
-CLIENT SERVICE (package: com.ecommerce.frontendservice.client):
-- Class: ProductServiceClient — uses the @LoadBalanced RestClient.Builder, base URL "http://product-service"
-- Method: List<ProductResponse> getAllProducts() — calls GET /api/products; note this endpoint returns a Page<Product> from product-service, so deserialize accordingly and extract just the "content" list (map the raw JSON response, don't assume a flat array)
-- Method: ProductResponse getProductById(Long id) — calls GET /api/products/{id}; if 404, throw our own ProductNotFoundException with a clear message
+FEIGN CLIENT (package: com.ecommerce.frontendservice.client):
+- Interface: ProductServiceClient, annotated @FeignClient(name = "product-service")
+- Method: @GetMapping("/api/products") ProductPageResponse getAllProducts() — deserializes into ProductPageResponse; the caller (see controller below) extracts .getContent() to get the actual list
+- Method: @GetMapping("/api/products/{id}") ProductResponse getProductById(@PathVariable("id") Long id)
+- This is purely a declarative interface — no implementation body, no manual URL/host construction. Spring Cloud OpenFeign generates the implementation at runtime, resolving "product-service" through Eureka.
+- Error handling: Feign throws FeignException subtypes on non-2xx responses. Do NOT write a custom ErrorDecoder — instead, catch feign.FeignException.NotFound specifically at the call site in HomeController/ProductController (see below) and translate it into our own ProductNotFoundException.
 
 CONTROLLERS (package: com.ecommerce.frontendservice.controller):
 
 HomeController
-- GET / — calls getAllProducts, adds the list to the Model under attribute name "products", returns view name "home"
+- GET / — calls productServiceClient.getAllProducts(), extracts the content list, adds it to the Model under attribute name "products", returns view name "home"
 
 ProductController
-- GET /products/{id} — calls getProductById, adds the result to the Model under attribute name "product", returns view name "product-detail"
+- GET /products/{id} — calls productServiceClient.getProductById(id); catch feign.FeignException.NotFound and re-throw as our own ProductNotFoundException with a clear message; on success, adds the result to the Model under attribute name "product", returns view name "product-detail"
 
 ERROR HANDLING (package: com.ecommerce.frontendservice.exception):
 - Custom exception: ProductNotFoundException extends RuntimeException (constructor takes a String message)
@@ -82,9 +74,10 @@ STATIC CSS (src/main/resources/static/css/style.css):
 
 CONSTRAINTS:
 - Do not use any JavaScript anywhere, including inline event handlers — every interaction must be a plain <a> link or a plain HTML <form> with a standard HTTP method.
+- Do not write a custom Feign ErrorDecoder — catching the specific FeignException.NotFound subtype at each call site is sufficient and correct for this version.
 - Do not add authentication, session handling, cart, or checkout pages yet — those are Part B (the next prompt), which will extend this same project.
 - Do not add a database or any datasource to this service — it has none, it only calls product-service.
-- Output every file in full: pom.xml, application.yml, the RestClient config class, ProductResponse DTO, ProductServiceClient, both controllers, ProductNotFoundException, WebExceptionHandler, the header fragment, all three Thymeleaf templates, and style.css.
+- Output every file in full: application.yml, both DTOs, the ProductServiceClient Feign interface, both controllers, ProductNotFoundException, WebExceptionHandler, the header fragment, all three Thymeleaf templates, and style.css. Do NOT output pom.xml — it already exists and must not change.
 
 VERIFICATION (tell me how to confirm this works):
 - Explain how to confirm, with product-service already running and containing at least 2-3 products: visiting http://localhost:8080/ shows the product grid, clicking a product's "View Details" link shows its detail page, and visiting a non-existent product id (e.g. /products/9999) shows the error page with a 404 status.

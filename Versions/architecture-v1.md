@@ -14,7 +14,7 @@
 | product-service | 8081 | Postgres, schema `product_schema` | yes |
 | user-service | 8082 | Postgres, schema `user_schema` | yes |
 | order-service | 8083 | Postgres, schema `order_schema` | yes |
-| frontend-service | 8080 | none (calls the above via RestClient) | yes |
+| frontend-service | 8080 | none (calls the above via Feign clients) | yes |
 
 All four Spring Boot apps (everything except eureka-server) register with Eureka on startup using `spring-cloud-starter-netflix-eureka-client`. No API Gateway yet — frontend-service resolves the other three by Eureka service name directly.
 
@@ -139,13 +139,13 @@ Cart and order are the same entity in v1, distinguished by `status`. Splitting t
 
 ### 5.3 The one inter-service call in v1
 
-`order-service` → `product-service`, via `RestClient` resolved through Eureka (`http://product-service/api/products/{id}`, with Eureka's client-side load balancing resolving the actual host:port). This happens on add-to-cart, to snapshot name/price. This is the pattern every later inter-service call in v2–v4 will reuse, so it's worth getting the error handling right here: if product-service is unreachable or returns 404, order-service should return a clean 400/404 to the frontend, not a raw exception stack trace.
+`order-service` → `product-service`, via a declarative Feign client (`@FeignClient(name = "product-service")`) resolved through Eureka — no manual URL building, Feign resolves the logical service name and load-balances automatically. This happens on add-to-cart, to snapshot name/price. This is the pattern every later inter-service call in v2–v4 will reuse, so it's worth getting the error handling right here: Feign throws `FeignException` subtypes (e.g. `FeignException.NotFound`) on non-2xx responses — catch the specific subtype and translate it into our own domain exception (e.g. `ProductNotFoundException`), don't let a raw `FeignException` propagate to the frontend.
 
 ---
 
 ## 6. frontend-service
 
-Spring Boot MVC + Thymeleaf, no JS. No entities, no database. Pure controller → RestClient → template flow, same shape as the `book-partner-frontend` module in your reference guide.
+Spring Boot MVC + Thymeleaf, no JS. No entities, no database. Pure controller → Feign client → template flow, same shape as the `book-partner-frontend` module in your reference guide.
 
 ### 6.1 Pages / controllers
 
