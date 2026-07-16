@@ -1,123 +1,117 @@
-# PROMPT 4 (FINAL) — order-service
+# PROMPT 3 (FINAL, CORRECTED) — user-service
 
 > Paste everything in the code block below directly into Amazon Q as a single prompt.
-> This service calls product-service over HTTP via a declarative Feign client. product-service must already be built and registered with eureka-server before you test this end to end — but you can still generate, compile, and unit-test this service on its own first (that's the point of the mocked-Feign-client tests below).
-> Assumes the project was already generated via Spring Initializr per the settings given earlier (Spring Boot 4.1.0, Group com.ecommerce, Artifact order-service, Package com.ecommerce.orderservice, dependencies: Spring Web, Spring Data JPA, Validation, Eureka Discovery Client, OpenFeign, Spring Cloud LoadBalancer, PostgreSQL Driver, Lombok).
-> If Amazon Q's response gets cut off, the natural split point is: (4a) entities + repositories + cart-only endpoints, (4b) the Feign client + checkout logic, (4c) the unit tests as a separate follow-up. Say so and I'll write the multi-part version instead.
+> This service is self-contained — it does not call any other service.
+> Assumes the project was already generated via Spring Initializr per the settings given earlier (Spring Boot 4.1.0, Group com.ecommerce, Artifact user-service, Package com.ecommerce.userservice, dependencies: Spring Web, Spring Data JPA, Validation, Eureka Discovery Client, PostgreSQL Driver, Lombok, PLUS the manual pom.xml addition of spring-security-crypto).
+>
+> **Correction from the original v1 prompt:** Spring Boot 4.0 removed `@MockBean`/`@SpyBean` entirely (deprecated since 3.4, gone since 4.0). Since this project targets 4.1.0, the test class below uses `@MockitoBean` (package `org.springframework.test.context.bean.override.mockito.MockitoBean`) instead. This is a straight annotation swap — `@MockitoBean` comes from `spring-test`, which `spring-boot-starter-test` already pulls in transitively, so no pom.xml change is needed.
 
 ```
-I have already generated this Spring Boot project via Spring Initializr — do not modify, add, or remove anything in pom.xml, and do not change the Spring Boot or Spring Cloud version:
+I have already generated this Spring Boot project via Spring Initializr, with one manual addition to pom.xml — do not modify, add, or remove anything else in pom.xml, and do not change the Spring Boot or Spring Cloud version:
 
 - Spring Boot 4.1.0, Spring Cloud release train 2025.1.2 (already configured in pom.xml)
-- Group: com.ecommerce, Artifact: order-service, Package: com.ecommerce.orderservice
-- Dependencies present: Spring Web, Spring Data JPA, Validation, Eureka Discovery Client, OpenFeign, Spring Cloud LoadBalancer, PostgreSQL Driver, Lombok (spring-boot-starter-test is included by default, no action needed for it)
+- Group: com.ecommerce, Artifact: user-service, Package: com.ecommerce.userservice
+- Dependencies present: Spring Web, Spring Data JPA, Validation, Eureka Discovery Client, PostgreSQL Driver, Lombok, and spring-security-crypto (added manually — NOT the full spring-boot-starter-security, which is intentionally absent since it would auto-configure a login form and lock every endpoint). spring-boot-starter-test is included by default, no action needed for it.
 - Configuration format: application.yml (already exists, currently empty/default)
 
-Your task is ONLY to write the application logic, configuration, and tests on top of this existing project. Do not touch pom.xml. Do not suggest adding any dependency beyond what's listed above.
+Your task is ONLY to write the application logic, configuration, and tests on top of this existing project. Do not touch pom.xml. Do not suggest adding spring-boot-starter-security or any other dependency beyond what's listed above.
 
 MAIN APPLICATION CLASS:
-- File: src/main/java/com/ecommerce/orderservice/OrderServiceApplication.java
-- Annotations: @SpringBootApplication, @EnableDiscoveryClient, @EnableFeignClients
+- File: src/main/java/com/ecommerce/userservice/UserServiceApplication.java
+- Annotations: @SpringBootApplication, @EnableDiscoveryClient
 
 CONFIGURATION FILE:
 - File: src/main/resources/application.yaml
-- server.port: 8083
-- spring.application.name: order-service
-- spring.datasource.url: jdbc:postgresql://localhost:5432/order_db
+- server.port: 8082
+- spring.application.name: user-service
+- spring.datasource.url: jdbc:postgresql://localhost:5432/user_db
 - spring.datasource.username: postgres
 - spring.datasource.password: root
 - spring.jpa.hibernate.ddl-auto: update
 - spring.jpa.show-sql: true
 - eureka.client.service-url.defaultZone: http://localhost:8761/eureka
 
-ENTITIES (package: com.ecommerce.orderservice.entity):
+ENTITY (package: com.ecommerce.userservice.entity):
 
-Entity: Order
+Entity: User
 - id: Long, @Id, @GeneratedValue(strategy = GenerationType.IDENTITY)
-- userId: Long, @NotNull — plain reference, no cross-service foreign key
-- status: String, @NotNull, @Column(length = 20) — valid values are the literal strings "CART" and "PLACED" only; validate this in code (a simple check, not a JPA @Enumerated type)
-- createdAt: LocalDateTime — set only inside @PrePersist, @Column(updatable = false)
-- updatedAt: LocalDateTime — set inside both @PrePersist and @PreUpdate
+- name: String, @NotBlank, @Column(length = 60)
+- email: String, @NotBlank, @Email, @Column(unique = true)
+- passwordHash: String, @NotBlank — stores the BCrypt hash only, never plaintext
+- role: String, @Column(length = 20) — default value "CUSTOMER", set inside a @PrePersist method if not already set; do not expose a way for the client to set this via the register endpoint
+- createdAt: LocalDateTime — set only inside a @PrePersist method, @Column(updatable = false)
 
-Entity: OrderItem
-- id: Long, @Id, @GeneratedValue(strategy = GenerationType.IDENTITY)
-- order: Order, @ManyToOne(fetch = FetchType.LAZY), @JoinColumn(name = "order_id", nullable = false) — this IS a real JPA relationship, unlike product-service's plain-column pattern
-- productId: Long, @NotNull — plain reference to product-service's Product, no JPA relationship (different schema/service)
-- productNameSnapshot: String, @Column(length = 100) — copied from product-service at the moment the item is added to cart, not read live afterward
-- priceSnapshot: BigDecimal, @NotNull — copied at the same moment as the name snapshot
-- quantity: Integer, @NotNull, @Min(1)
+Use Lombok @Getter @Setter @NoArgsConstructor @AllArgsConstructor.
 
-Use Lombok @Getter @Setter @NoArgsConstructor @AllArgsConstructor on both entities.
+REPOSITORY (package: com.ecommerce.userservice.repository):
+- UserRepository extends JpaRepository<User, Long>
+  - Add method: Optional<User> findByEmail(String email)
+  - Add method: boolean existsByEmail(String email)
 
-REPOSITORIES (package: com.ecommerce.orderservice.repository):
-- OrderRepository extends JpaRepository<Order, Long>
-  - Add method: Optional<Order> findByUserIdAndStatus(Long userId, String status)
-  - Add method: List<Order> findByUserIdAndStatusNot(Long userId, String excludedStatus) — used for order history (everything that isn't a live CART)
-- OrderItemRepository extends JpaRepository<OrderItem, Long>
+BEAN CONFIGURATION (package: com.ecommerce.userservice.config):
+- A @Configuration class exposing a @Bean of type BCryptPasswordEncoder (from spring-security-crypto, already present in pom.xml)
 
-DTOs (package: com.ecommerce.orderservice.dto):
-- AddItemRequest: productId (Long, @NotNull), quantity (Integer, @NotNull, @Min(1))
-- ProductResponse: id (Long), name (String), price (BigDecimal), stockQuantity (Integer) — this is the shape used to deserialize product-service's GET /api/products/{id} response; only include fields we actually need
-- OrderItemResponse: id (Long), productId (Long), productNameSnapshot (String), priceSnapshot (BigDecimal), quantity (Integer)
-- OrderResponse: id (Long), userId (Long), status (String), items (List<OrderItemResponse>), createdAt (LocalDateTime)
+SESSION STORE (package: com.ecommerce.userservice.session):
+- A @Component class SessionStore holding an in-memory ConcurrentHashMap<String, Long> (token -> userId)
+- Method: String createSession(Long userId) — generates a token via UUID.randomUUID().toString(), stores the mapping, returns the token
+- Method: Optional<Long> resolveUserId(String token) — looks up the token, returns empty if not found
+- This is intentionally NOT persisted to the database — state is lost on service restart, which is a known and accepted v1 limitation, do not add any persistence for this.
 
-FEIGN CLIENT (package: com.ecommerce.orderservice.client):
-- Interface: ProductServiceClient, annotated @FeignClient(name = "product-service")
-- Method: @GetMapping("/api/products/{id}") ProductResponse getProduct(@PathVariable("id") Long id)
-- This is purely a declarative interface — no implementation body, no manual URL/host construction. Spring Cloud OpenFeign generates the implementation at runtime, resolving "product-service" through Eureka.
-- Error handling: Feign throws FeignException subtypes on non-2xx responses. Do NOT write a custom ErrorDecoder for this version — instead, catch feign.FeignException.NotFound specifically at the call site in the service layer (see OrderService below) and translate it into our own ProductNotFoundException. Let any other FeignException subtype propagate as-is for now — no retry or circuit breaker logic in this version.
+DTOs (package: com.ecommerce.userservice.dto):
+- RegisterRequest: name (String, @NotBlank), email (String, @NotBlank @Email), password (String, @NotBlank, plaintext, minimum length 6 via @Size)
+- LoginRequest: email (String, @NotBlank), password (String, @NotBlank)
+- LoginResponse: token (String)
+- UserResponse: id (Long), name (String), email (String), role (String) — used for the /me endpoint response, must NOT include passwordHash
 
-SERVICE LAYER (package: com.ecommerce.orderservice.service):
-- Class: OrderService (a real @Service class here, not controller-calls-repository-directly like product-service — this service has enough logic to warrant it)
-- Method: Order getOrCreateCart(Long userId) — finds the existing CART order for the user via findByUserIdAndStatus, or creates and saves a new one with status "CART" if none exists
-- Method: OrderItem addItemToCart(Long userId, AddItemRequest request) — calls getOrCreateCart, then calls ProductServiceClient.getProduct(request.getProductId()); wrap this call in a try/catch for feign.FeignException.NotFound and re-throw as our own ProductNotFoundException with a clear message; on success, creates an OrderItem with the snapshot fields populated from the Feign response, saves it, returns it
-- Method: void removeItemFromCart(Long itemId) — deletes the OrderItem by id; throw OrderItemNotFoundException if it doesn't exist
-- Method: Order checkout(Long userId) — finds the CART order via findByUserIdAndStatus; if none exists OR it has zero items, throw EmptyCartException; otherwise set status to "PLACED", save, return it
-- Method: List<Order> getOrderHistory(Long userId) — returns findByUserIdAndStatusNot(userId, "CART")
+CONTROLLER (package: com.ecommerce.userservice.controller):
 
-CONTROLLER (package: com.ecommerce.orderservice.controller):
+UserController — base path /api/users
+- POST /api/users/register — @Valid @RequestBody RegisterRequest; if existsByEmail is true, throw EmailAlreadyExistsException (→ 409); otherwise hash the password with BCryptPasswordEncoder, save the User, return 201 with UserResponse (not the raw entity, so passwordHash is never serialized)
+- POST /api/users/login — @Valid @RequestBody LoginRequest; find user by email; if not found OR password doesn't match via BCryptPasswordEncoder.matches(), throw InvalidCredentialsException (→ 401); otherwise call SessionStore.createSession and return 200 with LoginResponse
+- GET /api/users/me — reads a header named X-Session-Token; if missing or SessionStore.resolveUserId returns empty, throw UnauthorizedException (→ 401); otherwise load the user by the resolved id and return 200 with UserResponse
 
-OrderController — base path /api/orders
-- GET /api/orders/cart/{userId} — calls getOrCreateCart, maps to OrderResponse, returns 200 (an empty-items cart is a valid 200, not a 404)
-- POST /api/orders/cart/{userId}/items — @Valid @RequestBody AddItemRequest, calls addItemToCart, returns 201 with the updated cart as OrderResponse (re-fetch the cart after adding, don't just return the single item)
-- DELETE /api/orders/cart/{userId}/items/{itemId} — calls removeItemFromCart, returns 204
-- POST /api/orders/checkout/{userId} — calls checkout, returns 200 with OrderResponse
-- GET /api/orders/history/{userId} — calls getOrderHistory, returns 200 with List<OrderResponse>
-
-EXCEPTION HANDLING (package: com.ecommerce.orderservice.exception):
-- Custom exception: ProductNotFoundException extends RuntimeException (constructor takes a String message) — thrown when the Feign call to product-service returns 404
-- Custom exception: OrderItemNotFoundException extends RuntimeException (constructor takes a String message)
-- Custom exception: EmptyCartException extends RuntimeException (constructor takes a String message)
+EXCEPTION HANDLING (package: com.ecommerce.userservice.exception):
+- Custom exception: EmailAlreadyExistsException extends RuntimeException (constructor takes a String message)
+- Custom exception: InvalidCredentialsException extends RuntimeException (constructor takes a String message)
+- Custom exception: UnauthorizedException extends RuntimeException (constructor takes a String message)
 - Class: GlobalExceptionHandler, annotated @RestControllerAdvice
   - @ExceptionHandler(MethodArgumentNotValidException.class) → 400, return a body listing each invalid field and its validation message
-  - @ExceptionHandler(ProductNotFoundException.class) → 404, return { "message": <exception message> }
-  - @ExceptionHandler(OrderItemNotFoundException.class) → 404, return { "message": <exception message> }
-  - @ExceptionHandler(EmptyCartException.class) → 400, return { "message": <exception message> }
+  - @ExceptionHandler(EmailAlreadyExistsException.class) → 409, return { "message": <exception message> }
+  - @ExceptionHandler(InvalidCredentialsException.class) → 401, return { "message": <exception message> }
+  - @ExceptionHandler(UnauthorizedException.class) → 401, return { "message": <exception message> }
   - @ExceptionHandler(Exception.class) → 500, generic fallback, return { "message": "An unexpected error occurred" }
 
-UNIT TESTS (package: com.ecommerce.orderservice.service, in src/test/java):
+UNIT TESTS (package: com.ecommerce.userservice.controller, in src/test/java):
 
-Test class: OrderServiceTest
-- Annotated @ExtendWith(MockitoExtension.class) — this is a plain unit test, NOT @SpringBootTest or @WebMvcTest, since we're testing OrderService's own logic directly, not the HTTP layer
-- @Mock OrderRepository
-- @Mock OrderItemRepository
-- @Mock ProductServiceClient — this is the Feign client interface; mocking it directly with Mockito means product-service does not need to be running for any of these tests
-- @InjectMocks OrderService
-1. addItemToCart_whenProductServiceClientThrowsNotFound_throwsProductNotFoundException — mock productServiceClient.getProduct(anyLong()) to throw feign.FeignException.NotFound (use a minimal valid constructor for that exception type), call addItemToCart, assert that our own ProductNotFoundException is thrown, not the raw FeignException
-2. addItemToCart_whenProductExists_createsOrderItemWithCorrectSnapshotFields — mock productServiceClient.getProduct() to return a ProductResponse with a known name and price, mock orderRepository.findByUserIdAndStatus() to return an existing CART order, call addItemToCart, capture the OrderItem passed to orderItemRepository.save() with an ArgumentCaptor, assert its productNameSnapshot and priceSnapshot match exactly what the mocked ProductResponse returned
-3. checkout_whenCartHasZeroItems_throwsEmptyCartException — mock findByUserIdAndStatus to return a CART order with an empty items list, call checkout, assert EmptyCartException is thrown, and assert orderRepository.save() was NEVER called (Mockito.verify(...,never()))
-4. checkout_whenCartHasItems_setsStatusToPlacedAndSaves — mock findByUserIdAndStatus to return a CART order with at least one item, call checkout, capture the Order passed to save(), assert its status field equals "PLACED"
-5. getOrCreateCart_whenNoCartExists_createsAndSavesNewCartOrder — mock findByUserIdAndStatus to return Optional.empty(), call getOrCreateCart, assert orderRepository.save() was called exactly once with a new Order whose status is "CART" and userId matches the input
+IMPORTANT — Spring Boot version note: this project targets Spring Boot 4.1.0, where `@MockBean`/`@SpyBean` have been removed entirely (they were deprecated in 3.4 and removed in 4.0). Use `@MockitoBean` instead, imported from `org.springframework.test.context.bean.override.mockito.MockitoBean` (part of `spring-test`, already pulled in transitively by `spring-boot-starter-test` — no pom.xml change). Do NOT use `@MockBean` or its package `org.springframework.boot.test.mock.mockito.MockBean` anywhere — it will not compile on this version.
+
+Test class: UserControllerTest
+- Annotated @WebMvcTest(UserController.class) — loads only the web layer, not the full application context or a real database
+- Mock UserRepository with @MockitoBean (NOT @MockBean)
+- Mock SessionStore with @MockitoBean (NOT @MockBean)
+- Do NOT mock BCryptPasswordEncoder — use the real bean (it's cheap, pure computation, and testing the actual hash/match logic is the point); if @WebMvcTest doesn't pick up the @Configuration class automatically, provide the real BCryptPasswordEncoder bean via a @TestConfiguration inner class in the test
+1. register_whenEmailAlreadyExists_returns409 — mock existsByEmail to return true, POST /api/users/register with any valid body, assert status 409, assert the response body's "message" is present
+2. register_whenNewEmail_returns201AndResponseExcludesPasswordHash — mock existsByEmail to return false and save() to return a User with an assigned id, POST a valid body, assert status 201, assert the response JSON does NOT contain a "passwordHash" key at all (not just that it's null — the field must be genuinely absent)
+3. login_whenPasswordDoesNotMatch_returns401 — mock findByEmail to return a User whose passwordHash is a real BCrypt hash of some known password, POST /api/users/login with a different password, assert status 401
+4. login_whenCredentialsAreCorrect_returns200WithToken — mock findByEmail to return a User whose passwordHash is a real BCrypt hash of a known password, mock SessionStore.createSession to return a fixed token string, POST with the matching plaintext password, assert status 200 and that the response body's "token" field equals the mocked token
+5. getCurrentUser_whenTokenIsMissing_returns401 — send GET /api/users/me with no X-Session-Token header, assert status 401
+6. getCurrentUser_whenTokenIsValid_returns200WithUserDetails — mock SessionStore.resolveUserId to return Optional.of(some id), mock UserRepository to return a matching User, send GET /api/users/me with a header, assert status 200 and correct name/email/role in the response
 
 CONSTRAINTS:
-- Do not decrement or otherwise touch product-service's stock in this version — checkout only flips status, nothing more. Stock mutation is a later version's addition.
-- Do not add a custom ErrorDecoder, retry, circuit breaker, or timeout configuration on the Feign client — a plain, unguarded call with the one specific NotFound catch described above is correct for this version.
-- Do not add authentication/authorization checks anywhere — userId is taken directly from the path variable with no verification in this version.
-- Do not add any endpoints beyond the five listed above.
-- Do not start a Spring application context anywhere in OrderServiceTest — plain Mockito only, so these tests pass identically whether product-service is running or not.
-- Output every file in full: application.yml, both entities, both repositories, all four DTOs, the ProductServiceClient Feign interface, OrderService, OrderController, all three custom exceptions, GlobalExceptionHandler, and OrderServiceTest. Do NOT output pom.xml — it already exists and must not change.
+- Do not suggest or add spring-boot-starter-security — this would activate a default login form and block all endpoints, which we do not want in v1. Only the standalone spring-security-crypto artifact (already present) should be used, purely for BCryptPasswordEncoder.
+- Do not return the raw User entity from any controller method — always use UserResponse to avoid leaking passwordHash.
+- Do not add JWT, token expiry, or any persistence for sessions — that is deferred to a later version.
+- Do not add any endpoints beyond register, login, and /me.
+- Do not add @SpringBootTest, Testcontainers, or a real Postgres connection anywhere in the tests.
+- Do not use @MockBean anywhere — use @MockitoBean as specified above; this is a Spring Boot 4.1.0 project and @MockBean no longer exists in this version.
+- Output every file in full: application.yml, User entity, UserRepository, the BCryptPasswordEncoder config class, SessionStore, all four DTOs, UserController, all three custom exceptions, GlobalExceptionHandler, and UserControllerTest. Do NOT output pom.xml — it already exists and must not change.
+
+IMPORTANT — Spring Boot 4.1.0 import paths: use exactly these two imports in the test class, nothing else:
+import org.springframework.boot.webmvc.test.autoconfigure.WebMvcTest;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
+Do NOT use org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest or org.springframework.boot.test.mock.mockito.MockBean — both are Spring Boot 3.x-era paths that no longer exist in 4.1.0.
 
 VERIFICATION (tell me how to confirm this works):
-- List the exact curl or Postman requests to test, IN THIS ORDER since product-service must already have data: create a category and 2 products in product-service first, then add both to a user's cart via order-service, view the cart and confirm the name/price snapshots match product-service's data at that moment, remove one item, checkout, confirm status is PLACED, view order history, then attempt to check out an empty cart for a different userId and confirm EmptyCartException triggers (400), then attempt to add a non-existent productId to a cart and confirm ProductNotFoundException triggers (404).
-- Also tell me the exact Maven command to run just OrderServiceTest, confirm it passes with product-service NOT running (to prove the mocked isolation actually works), and describe what a fully-passing console output should look like.
+- List the exact curl or Postman requests to test: register a user, attempt to register the same email again (expect 409), login with correct credentials (expect a token), login with wrong password (expect 401), call /me with the token in X-Session-Token header (expect the user's details, no passwordHash field present), call /me with no header (expect 401).
+- Also tell me the exact Maven command to run just UserControllerTest, and what a fully-passing console output should look like.
 ```
