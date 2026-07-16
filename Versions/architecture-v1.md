@@ -11,9 +11,9 @@
 | Service | Port | Datastore | Eureka client? |
 |---|---|---|---|
 | eureka-server | 8761 | none | n/a (is the registry) |
-| product-service | 8081 | Postgres, schema `product_schema` | yes |
-| user-service | 8082 | Postgres, schema `user_schema` | yes |
-| order-service | 8083 | Postgres, schema `order_schema` | yes |
+| product-service | 8081 | Postgres, database `product_db` | yes |
+| user-service | 8082 | Postgres, database `user_db` | yes |
+| order-service | 8083 | Postgres, database `order_db` | yes |
 | frontend-service | 8080 | none (calls the above via Feign clients) | yes |
 
 All four Spring Boot apps (everything except eureka-server) register with Eureka on startup using `spring-cloud-starter-netflix-eureka-client`. No API Gateway yet — frontend-service resolves the other three by Eureka service name directly.
@@ -67,7 +67,9 @@ Plain `spring-cloud-starter-netflix-eureka-server` app. No entities, no REST end
 
 ### 3.3 Validation / error behavior
 
-Standard `@RestControllerAdvice` `GlobalExceptionHandler`: catches `MethodArgumentNotValidException` → 400 with field errors, catches a custom `ProductNotFoundException` → 404, generic `Exception` fallback → 500. No need for anything more elaborate in v1.
+Standard `@RestControllerAdvice` `GlobalExceptionHandler`: catches `MethodArgumentNotValidException` → 400 with field errors, catches `ProductNotFoundException`/`CategoryNotFoundException` → 404, `InsufficientStockException` → 409, generic `Exception` fallback → 500.
+
+`Category.name` is `@Column(unique = true)` — this requires two layers of protection, not one: an explicit `existsByName` check in `CategoryController` before saving (throwing `CategoryAlreadyExistsException` → 409), plus a `DataIntegrityViolationException` handler in `GlobalExceptionHandler` (also → 409) as a backstop for the race condition where two requests pass the pre-check at nearly the same instant. Relying on the database exception alone produces an unreadable generic 500; relying on the pre-check alone leaves a narrow concurrency gap. This same two-layer pattern applies to any future entity field with a uniqueness constraint (see `promptrule.md`).
 
 ---
 
@@ -109,7 +111,7 @@ Cart and order are the same entity in v1, distinguished by `status`. Splitting t
 | Field | Type | Constraints |
 |---|---|---|
 | id | Long | PK, auto-generated (IDENTITY) |
-| userId | Long | `@NotNull` — plain reference, no cross-service FK (different DB schema) |
+| userId | Long | `@NotNull` — plain reference, no cross-service FK (different database entirely, not just a different schema) |
 | status | String | `@NotNull` — one of `CART`, `PLACED` (plain String field in v1, not a full enum type in Postgres — keep the DB simple, validate the value in Java) |
 | createdAt | LocalDateTime | `@PrePersist` |
 | updatedAt | LocalDateTime | `@PreUpdate` |

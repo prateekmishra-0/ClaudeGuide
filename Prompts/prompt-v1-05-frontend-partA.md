@@ -21,7 +21,7 @@ MAIN APPLICATION CLASS:
 - Annotations: @SpringBootApplication, @EnableDiscoveryClient, @EnableFeignClients
 
 CONFIGURATION FILE:
-- File: src/main/resources/application.yml
+- File: src/main/resources/application.yaml
 - server.port: 8080
 - spring.application.name: frontend-service
 - spring.thymeleaf.cache: false — so template edits reload without restarting during development

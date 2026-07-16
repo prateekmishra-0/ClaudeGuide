@@ -1,33 +1,32 @@
-# PROMPT 4 — order-service
+# PROMPT 4 (FINAL) — order-service
 
 > Paste everything in the code block below directly into Amazon Q as a single prompt.
-> This service calls product-service over HTTP via a declarative Feign client. product-service must already be built and registered with eureka-server before you test this end to end — but you can still generate and compile this service on its own first.
-> Assumes the project was already generated via Spring Initializr per the settings above.
-> If Amazon Q's response gets cut off, the natural split point is: (4a) entities + repositories + cart-only endpoints (no product-service call), then (4b) the Feign client + checkout logic. Say so and I'll write the two-part version instead.
+> This service calls product-service over HTTP via a declarative Feign client. product-service must already be built and registered with eureka-server before you test this end to end — but you can still generate, compile, and unit-test this service on its own first (that's the point of the mocked-Feign-client tests below).
+> Assumes the project was already generated via Spring Initializr per the settings given earlier (Spring Boot 4.1.0, Group com.ecommerce, Artifact order-service, Package com.ecommerce.orderservice, dependencies: Spring Web, Spring Data JPA, Validation, Eureka Discovery Client, OpenFeign, Spring Cloud LoadBalancer, PostgreSQL Driver, Lombok).
+> If Amazon Q's response gets cut off, the natural split point is: (4a) entities + repositories + cart-only endpoints, (4b) the Feign client + checkout logic, (4c) the unit tests as a separate follow-up. Say so and I'll write the multi-part version instead.
 
 ```
-I have already generated this Spring Boot project via Spring Initializr with the following settings — do not modify, add, or remove anything in pom.xml, and do not change the Spring Boot or Spring Cloud version:
+I have already generated this Spring Boot project via Spring Initializr — do not modify, add, or remove anything in pom.xml, and do not change the Spring Boot or Spring Cloud version:
 
 - Spring Boot 4.1.0, Spring Cloud release train 2025.1.2 (already configured in pom.xml)
 - Group: com.ecommerce, Artifact: order-service, Package: com.ecommerce.orderservice
-- Dependencies present: Spring Web, Spring Data JPA, Validation, Eureka Discovery Client, OpenFeign, Spring Cloud LoadBalancer, PostgreSQL Driver, Lombok
+- Dependencies present: Spring Web, Spring Data JPA, Validation, Eureka Discovery Client, OpenFeign, Spring Cloud LoadBalancer, PostgreSQL Driver, Lombok (spring-boot-starter-test is included by default, no action needed for it)
 - Configuration format: application.yml (already exists, currently empty/default)
 
-Your task is ONLY to write the application logic and configuration on top of this existing project. Do not touch pom.xml. Do not suggest adding any dependency beyond what's listed above.
+Your task is ONLY to write the application logic, configuration, and tests on top of this existing project. Do not touch pom.xml. Do not suggest adding any dependency beyond what's listed above.
 
 MAIN APPLICATION CLASS:
 - File: src/main/java/com/ecommerce/orderservice/OrderServiceApplication.java
 - Annotations: @SpringBootApplication, @EnableDiscoveryClient, @EnableFeignClients
 
 CONFIGURATION FILE:
-- File: src/main/resources/application.yml
+- File: src/main/resources/application.yaml
 - server.port: 8083
 - spring.application.name: order-service
-- spring.datasource.url: jdbc:postgresql://localhost:5432/project_db?currentSchema=order_schema
+- spring.datasource.url: jdbc:postgresql://localhost:5432/order_db
 - spring.datasource.username: postgres
 - spring.datasource.password: root
 - spring.jpa.hibernate.ddl-auto: update
-- spring.jpa.properties.hibernate.default_schema: order_schema
 - spring.jpa.show-sql: true
 - eureka.client.service-url.defaultZone: http://localhost:8761/eureka
 
@@ -96,13 +95,29 @@ EXCEPTION HANDLING (package: com.ecommerce.orderservice.exception):
   - @ExceptionHandler(EmptyCartException.class) → 400, return { "message": <exception message> }
   - @ExceptionHandler(Exception.class) → 500, generic fallback, return { "message": "An unexpected error occurred" }
 
+UNIT TESTS (package: com.ecommerce.orderservice.service, in src/test/java):
+
+Test class: OrderServiceTest
+- Annotated @ExtendWith(MockitoExtension.class) — this is a plain unit test, NOT @SpringBootTest or @WebMvcTest, since we're testing OrderService's own logic directly, not the HTTP layer
+- @Mock OrderRepository
+- @Mock OrderItemRepository
+- @Mock ProductServiceClient — this is the Feign client interface; mocking it directly with Mockito means product-service does not need to be running for any of these tests
+- @InjectMocks OrderService
+1. addItemToCart_whenProductServiceClientThrowsNotFound_throwsProductNotFoundException — mock productServiceClient.getProduct(anyLong()) to throw feign.FeignException.NotFound (use a minimal valid constructor for that exception type), call addItemToCart, assert that our own ProductNotFoundException is thrown, not the raw FeignException
+2. addItemToCart_whenProductExists_createsOrderItemWithCorrectSnapshotFields — mock productServiceClient.getProduct() to return a ProductResponse with a known name and price, mock orderRepository.findByUserIdAndStatus() to return an existing CART order, call addItemToCart, capture the OrderItem passed to orderItemRepository.save() with an ArgumentCaptor, assert its productNameSnapshot and priceSnapshot match exactly what the mocked ProductResponse returned
+3. checkout_whenCartHasZeroItems_throwsEmptyCartException — mock findByUserIdAndStatus to return a CART order with an empty items list, call checkout, assert EmptyCartException is thrown, and assert orderRepository.save() was NEVER called (Mockito.verify(...,never()))
+4. checkout_whenCartHasItems_setsStatusToPlacedAndSaves — mock findByUserIdAndStatus to return a CART order with at least one item, call checkout, capture the Order passed to save(), assert its status field equals "PLACED"
+5. getOrCreateCart_whenNoCartExists_createsAndSavesNewCartOrder — mock findByUserIdAndStatus to return Optional.empty(), call getOrCreateCart, assert orderRepository.save() was called exactly once with a new Order whose status is "CART" and userId matches the input
+
 CONSTRAINTS:
 - Do not decrement or otherwise touch product-service's stock in this version — checkout only flips status, nothing more. Stock mutation is a later version's addition.
 - Do not add a custom ErrorDecoder, retry, circuit breaker, or timeout configuration on the Feign client — a plain, unguarded call with the one specific NotFound catch described above is correct for this version.
 - Do not add authentication/authorization checks anywhere — userId is taken directly from the path variable with no verification in this version.
 - Do not add any endpoints beyond the five listed above.
-- Output every file in full: application.yml, both entities, both repositories, all four DTOs, the ProductServiceClient Feign interface, OrderService, OrderController, all three custom exceptions, and GlobalExceptionHandler. Do NOT output pom.xml — it already exists and must not change.
+- Do not start a Spring application context anywhere in OrderServiceTest — plain Mockito only, so these tests pass identically whether product-service is running or not.
+- Output every file in full: application.yml, both entities, both repositories, all four DTOs, the ProductServiceClient Feign interface, OrderService, OrderController, all three custom exceptions, GlobalExceptionHandler, and OrderServiceTest. Do NOT output pom.xml — it already exists and must not change.
 
 VERIFICATION (tell me how to confirm this works):
 - List the exact curl or Postman requests to test, IN THIS ORDER since product-service must already have data: create a category and 2 products in product-service first, then add both to a user's cart via order-service, view the cart and confirm the name/price snapshots match product-service's data at that moment, remove one item, checkout, confirm status is PLACED, view order history, then attempt to check out an empty cart for a different userId and confirm EmptyCartException triggers (400), then attempt to add a non-existent productId to a cart and confirm ProductNotFoundException triggers (404).
+- Also tell me the exact Maven command to run just OrderServiceTest, confirm it passes with product-service NOT running (to prove the mocked isolation actually works), and describe what a fully-passing console output should look like.
 ```

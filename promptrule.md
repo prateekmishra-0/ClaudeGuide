@@ -20,6 +20,7 @@
 - Once an enum-like status value (e.g. `Order.status` values `CART`, `PLACED`, `PENDING_PAYMENT`, `PAID`, `PAYMENT_FAILED`, `PAYMENT_PENDING_RETRY`) has been introduced in an earlier version, all of its existing values must be preserved when a later version adds new ones. Never drop or rename a previously-existing value while adding new ones — check `services-index.md` and the relevant earlier `architecture-vX.md` if unsure what already exists.
 - Entity field names and types, once established, do not change in a later version unless that version's architecture file explicitly says so. If a later version needs a new field, it's additive, not a rename or a type change to an existing field.
 - Follow whatever pattern an earlier service already established for equivalent situations (e.g. the `GlobalExceptionHandler` shape, the custom-exception-per-error-case pattern, the DTO-not-raw-entity response pattern) rather than inventing a new pattern for the same kind of problem.
+- **Any entity field with a uniqueness constraint** (e.g. `@Column(unique = true)`) must be protected two ways, not one: (1) an explicit pre-save existence check (e.g. `existsByName`/`existsByEmail`) that throws a specific custom exception with a clear 409 message, AND (2) a catch of `DataIntegrityViolationException` in the same service's `GlobalExceptionHandler`, mapped to the same 409 status, as a backstop against race conditions where two requests pass the pre-check simultaneously. Never rely on the database exception alone — it produces an unreadable generic error unless caught explicitly, and never rely on the pre-check alone — it has a real (if narrow) race-condition gap under concurrent requests.
 
 ## 3. Resilience and error-handling boundaries
 
@@ -37,7 +38,8 @@
 ## 5. Testing gate rule
 
 - **[always paste]** Do not consider a service "done" until every item in its version's testing checklist (in `architecture-vX.md`) passes. Do not begin the next service's construction prompt until the current one is marked `Built & Tested` in `services-index.md`.
-- If a test fails, the fix belongs to the service that failed — do not "fix" a failing order-service test by changing product-service's behavior unless the architecture file's contract for product-service was itself wrong (in which case, flag that explicitly rather than quietly patching around it).
+- **[always paste]** If a test or manual check fails and you suspect the root cause lies in a *different* service than the one currently open, STOP. Do not open, inspect, or modify any other service's files, even speculatively "just to check." State clearly what you observed, why you suspect the other service, and what you'd want to verify there — then wait. The person will investigate and fix it themselves in that service's own chat, or explicitly tell you to proceed. This applies even if you are highly confident about the cause.
+- If a test fails and the cause is confirmed to be within the current service, the fix belongs here — do not "fix" a failing order-service test by changing product-service's behavior unless the architecture file's contract for product-service was itself wrong (in which case, flag that explicitly rather than quietly patching around it).
 
 ## 6. Output style rules
 

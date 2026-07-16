@@ -95,7 +95,7 @@ Testing gate-by-gate turns "the whole system either works or it doesn't" into "e
 Several decisions in this project intentionally diverge from how a production system would actually be built:
 
 - Direct synchronous REST calls between services instead of an event-driven architecture with a message broker (no Docker available, so no Kafka/RabbitMQ)
-- A single Postgres instance with per-service schemas, instead of genuinely separate database servers per service
+- A separate database per service, but all hosted on one shared Postgres server instance, instead of genuinely independent database servers per service
 - Manual, synchronous compensation logic (restock-on-payment-failure) instead of a proper saga/distributed-transaction framework
 - No refresh tokens, no role-based authorization enforcement despite a role claim existing in the JWT
 - Downstream services trusting the gateway's JWT validation instead of independently re-validating
