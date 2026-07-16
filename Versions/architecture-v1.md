@@ -112,7 +112,7 @@ Cart and order are the same entity in v1, distinguished by `status`. Splitting t
 |---|---|---|
 | id | Long | PK, auto-generated (IDENTITY) |
 | userId | Long | `@NotNull` — plain reference, no cross-service FK (different database entirely, not just a different schema) |
-| status | String | `@NotNull` — one of `CART`, `PLACED` (plain String field in v1, not a full enum type in Postgres — keep the DB simple, validate the value in Java) |
+| status | String | `@NotNull`, `@Column(length = 30)` — one of `CART`, `PLACED` for this version (plain String field in v1, not a full enum type in Postgres — keep the DB simple, validate the value in Java); column sized at 30 rather than the shorter length these two values need, as deliberate schema headroom for longer status values introduced in later versions (e.g. v5's `PAYMENT_PENDING_RETRY`) |
 | createdAt | LocalDateTime | `@PrePersist` |
 | updatedAt | LocalDateTime | `@PreUpdate` |
 
@@ -121,7 +121,7 @@ Cart and order are the same entity in v1, distinguished by `status`. Splitting t
 | Field | Type | Constraints |
 |---|---|---|
 | id | Long | PK, auto-generated (IDENTITY) |
-| orderId | Long | `@ManyToOne` to Order, `@JoinColumn`, not nullable |
+| order | Order | `@ManyToOne(fetch = FetchType.LAZY)` to Order, `@JoinColumn(name = "order_id")`, not nullable |
 | productId | Long | `@NotNull` — reference into product-service, not a JPA relationship |
 | productNameSnapshot | String | max 100 — copied from product-service at time of add-to-cart, so the cart/order still reads correctly even if the product is later renamed or deleted |
 | priceSnapshot | BigDecimal | `@NotNull` — copied at checkout time, not read live, so a price change after checkout doesn't retroactively alter a placed order |

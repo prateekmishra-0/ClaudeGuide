@@ -58,7 +58,7 @@ SESSION STORE (package: com.ecommerce.userservice.session):
 - This is intentionally NOT persisted to the database — state is lost on service restart, which is a known and accepted v1 limitation, do not add any persistence for this.
 
 DTOs (package: com.ecommerce.userservice.dto):
-- RegisterRequest: name (String, @NotBlank), email (String, @NotBlank @Email), password (String, @NotBlank, plaintext, minimum length 6 via @Size)
+- RegisterRequest: name (String, @NotBlank, @Pattern(regexp = "^[a-zA-Z ]+$", message = "Name must contain only letters and spaces")), email (String, @NotBlank @Email), password (String, @NotBlank, plaintext, minimum length 6 via @Size)
 - LoginRequest: email (String, @NotBlank), password (String, @NotBlank)
 - LoginResponse: token (String)
 - UserResponse: id (Long), name (String), email (String), role (String) — used for the /me endpoint response, must NOT include passwordHash
@@ -77,6 +77,7 @@ EXCEPTION HANDLING (package: com.ecommerce.userservice.exception):
 - Class: GlobalExceptionHandler, annotated @RestControllerAdvice
   - @ExceptionHandler(MethodArgumentNotValidException.class) → 400, return a body listing each invalid field and its validation message
   - @ExceptionHandler(EmailAlreadyExistsException.class) → 409, return { "message": <exception message> }
+  - @ExceptionHandler(org.springframework.dao.DataIntegrityViolationException.class) → 409, return { "message": "A user with this email already exists" } — this is a backstop for the rare race condition where two requests pass the existsByEmail check at nearly the same instant; it should almost never trigger in normal testing, but must be present
   - @ExceptionHandler(InvalidCredentialsException.class) → 401, return { "message": <exception message> }
   - @ExceptionHandler(UnauthorizedException.class) → 401, return { "message": <exception message> }
   - @ExceptionHandler(Exception.class) → 500, generic fallback, return { "message": "An unexpected error occurred" }
@@ -100,6 +101,8 @@ Test class: UserControllerTest
 CONSTRAINTS:
 - Do not suggest or add spring-boot-starter-security — this would activate a default login form and block all endpoints, which we do not want in v1. Only the standalone spring-security-crypto artifact (already present) should be used, purely for BCryptPasswordEncoder.
 - Do not return the raw User entity from any controller method — always use UserResponse to avoid leaking passwordHash.
+- The email uniqueness check must be two-layered: the existsByEmail pre-check (already specified above) AND the DataIntegrityViolationException handler in GlobalExceptionHandler. Do not rely on either one alone.
+- name must be validated with @Pattern to allow only letters and spaces (no digits, no special characters) — this is a genuine v1 rule, not deferred to a later version.
 - Do not add JWT, token expiry, or any persistence for sessions — that is deferred to a later version.
 - Do not add any endpoints beyond register, login, and /me.
 - Do not add @SpringBootTest, Testcontainers, or a real Postgres connection anywhere in the tests.

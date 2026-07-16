@@ -25,6 +25,7 @@ Interface: UserServiceClient, annotated @FeignClient(name = "user-service")
 - @PostMapping("/api/users/login") LoginResponse login(@RequestBody LoginRequest request)
 - @GetMapping("/api/users/me") UserResponse getCurrentUser(@RequestHeader("X-Session-Token") String token)
 - Purely declarative — no implementation body. Error handling happens at the call site (see AuthController below): catch feign.FeignException.Conflict from register (user-service returns 409 on duplicate email) and re-throw as our own EmailAlreadyExistsException; catch feign.FeignException.Unauthorized from login (user-service returns 401 on bad credentials) and re-throw as our own InvalidCredentialsException.
+- Also catch feign.FeignException.BadRequest from register (user-service returns 400 when @Valid field validation fails, e.g. an invalid name or a too-short password) and re-throw as our own InvalidRegistrationException — do not attempt to parse or deserialize user-service's field-error JSON body; a fixed, generic message is sufficient for this version.
 
 Interface: OrderServiceClient, annotated @FeignClient(name = "order-service")
 - @GetMapping("/api/orders/cart/{userId}") OrderResponse getCart(@PathVariable("userId") Long userId)
@@ -35,6 +36,7 @@ Interface: OrderServiceClient, annotated @FeignClient(name = "order-service")
 
 NEW EXCEPTIONS (package: com.ecommerce.frontendservice.exception):
 - EmailAlreadyExistsException extends RuntimeException (constructor takes a String message)
+- InvalidRegistrationException extends RuntimeException (constructor takes a String message)
 - InvalidCredentialsException extends RuntimeException (constructor takes a String message)
 - EmptyCartException extends RuntimeException (constructor takes a String message)
 
@@ -59,7 +61,7 @@ CONTROLLERS (package: com.ecommerce.frontendservice.controller):
 
 AuthController
 - GET /register — returns view "register" with an empty RegisterRequest in the model
-- POST /register — @ModelAttribute RegisterRequest (plain form binding, not @Valid — validation happens server-side in user-service, we just surface whatever error it returns); call userServiceClient.register, catching feign.FeignException.Conflict as described above; on success, add a flash attribute "message" = "Registration successful, please log in" and redirect to /login; on EmailAlreadyExistsException, add "error" to the Model and return to view "register" (not a redirect, so the form data + error show together)
+- POST /register — @ModelAttribute RegisterRequest (plain form binding, not @Valid — validation happens server-side in user-service, we just surface whatever error it returns); call userServiceClient.register, catching feign.FeignException.Conflict AND feign.FeignException.BadRequest as described above; on success, add a flash attribute "message" = "Registration successful, please log in" and redirect to /login; on EmailAlreadyExistsException, add "error" = the exception's message to the Model and return to view "register"; on InvalidRegistrationException, add "error" = "Please check your details — name must contain only letters and spaces, and password must be at least 6 characters" to the Model and return to view "register" (same pattern as the email-conflict case — not a redirect, so form data + error show together)
 - GET /login — returns view "login"
 - POST /login — @ModelAttribute LoginRequest; call userServiceClient.login (catching feign.FeignException.Unauthorized as described above), then getCurrentUser, then populate the session as described above; on success redirect to "/"; on InvalidCredentialsException, add "error" to the Model and return to view "login"
 - POST /logout — invalidates the HttpSession, redirects to "/"
@@ -110,6 +112,7 @@ CONSTRAINTS:
 - Do not modify UserServiceClient's or OrderServiceClient's error handling beyond the three specific exceptions listed — let any other FeignException type propagate up to the existing WebExceptionHandler from Part A.
 - Do not add client-side validation of any kind (no HTML5 required/pattern attributes beyond what's trivial like input type="email") — validation is the backend services' job.
 - Output every new/changed file in full: all new DTOs, both new Feign client interfaces, all three new exceptions, LoginRequiredInterceptor + its WebMvcConfigurer registration, GlobalModelAttributes, the updated header fragment, all three controllers, the updated product-detail.html, and all five new templates (register, login, cart, order-confirmation, orders).
+- Do not attempt to deserialize or parse user-service's field-level validation error JSON on the frontend — InvalidRegistrationException carries a fixed, generic message only, as specified above. Field-level error mapping is out of scope for this version.
 
 VERIFICATION (tell me how to confirm this works):
 - List the exact browser click-path to test, in order, with eureka-server, product-service, user-service, order-service, and frontend-service all running: register a new account, get redirected to login with the success message visible, log in, confirm the header now shows your name, browse to a product and add it to cart, view the cart and confirm the total is correct, remove one item, add it back, check out, confirm the order confirmation page shows correct details, view order history and confirm the order appears, log out, and confirm /cart now redirects to /login.

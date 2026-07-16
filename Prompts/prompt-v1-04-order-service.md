@@ -35,7 +35,7 @@ ENTITIES (package: com.ecommerce.orderservice.entity):
 Entity: Order
 - id: Long, @Id, @GeneratedValue(strategy = GenerationType.IDENTITY)
 - userId: Long, @NotNull — plain reference, no cross-service foreign key
-- status: String, @NotNull, @Column(length = 20) — valid values are the literal strings "CART" and "PLACED" only; validate this in code (a simple check, not a JPA @Enumerated type)
+- status: String, @NotNull, @Column(length = 30) — valid values are the literal strings "CART" and "PLACED" only for this version; validate this in code (a simple check, not a JPA @Enumerated type). Column is deliberately sized at 30 rather than the shorter length these two values need, to leave headroom for longer status values later versions will introduce (e.g. PAYMENT_PENDING_RETRY) without requiring a schema change then.
 - createdAt: LocalDateTime — set only inside @PrePersist, @Column(updatable = false)
 - updatedAt: LocalDateTime — set inside both @PrePersist and @PreUpdate
 
@@ -116,6 +116,7 @@ CONSTRAINTS:
 - Do not add any endpoints beyond the five listed above.
 - Do not start a Spring application context anywhere in OrderServiceTest — plain Mockito only, so these tests pass identically whether product-service is running or not.
 - Output every file in full: application.yml, both entities, both repositories, all four DTOs, the ProductServiceClient Feign interface, OrderService, OrderController, all three custom exceptions, GlobalExceptionHandler, and OrderServiceTest. Do NOT output pom.xml — it already exists and must not change.
+- Do not add any status values beyond "CART" and "PLACED" in this version, even though the column is sized for longer future values — the extra length is schema headroom only, not a signal to add new statuses now.
 
 VERIFICATION (tell me how to confirm this works):
 - List the exact curl or Postman requests to test, IN THIS ORDER since product-service must already have data: create a category and 2 products in product-service first, then add both to a user's cart via order-service, view the cart and confirm the name/price snapshots match product-service's data at that moment, remove one item, checkout, confirm status is PLACED, view order history, then attempt to check out an empty cart for a different userId and confirm EmptyCartException triggers (400), then attempt to add a non-existent productId to a cart and confirm ProductNotFoundException triggers (404).
