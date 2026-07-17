@@ -101,3 +101,11 @@ Several decisions in this project intentionally diverge from how a production sy
 - Downstream services trusting the gateway's JWT validation instead of independently re-validating
 
 None of these are oversights — each is a stated trade-off, made consciously against the project's real constraints (no Docker, limited time, limited credits, solo build). The decision to document them explicitly (both here and in each version's "Known Limitations" section) rather than leave them unstated is itself a deliberate choice: being able to say "I knew the textbook-correct approach and chose not to take it, for this specific reason" is a stronger position in a technical review or viva than a project that either pretends every trade-off was accidental, or over-engineers a "correct" solution to a problem the project's actual constraints didn't require solving.
+
+## 11. The consolidated known-limitations writeup
+
+Pull together every "Known limitations" section from `architecture-v1.md` through `architecture-v5.md` into one honest paragraph or table, covering: no message broker (direct REST instead of events), no saga/distributed-transaction framework (manual compensation in order-service instead of a proper one), no real payment gateway, a separate database per service but all hosted on one shared Postgres server instance rather than genuinely independent database servers, no refresh tokens, no role enforcement despite the JWT carrying a role claim. The userId-vs-JWT ownership gap named in `architecture-v2.md` is resolved as of `architecture-v5.md` Section 2.4 and should NOT be listed here as unresolved — only role-based authorization remains outstanding on that front.
+
+Frame each item as a stated trade-off with a reason, not an accident — that's the difference this whole file structure has been building toward, and the same discipline Section 10 above already applies to the earlier batch of intentional choices.
+
+This writeup is written by hand, directly in this file — never delegated to Copilot or Amazon Q, and never duplicated into any `architecture-vX.md` file, per the project's core AI-facing/human-only split (Section 5).

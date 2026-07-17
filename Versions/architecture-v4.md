@@ -121,7 +121,7 @@ Both require a valid JWT, same as everything since v2.
 
 ## 6. order-service changes — checkout flow, now 3 states
 
-`Order.status` gains two new valid values: `PENDING_PAYMENT`, `PAID`, `PAYMENT_FAILED` (in addition to v1's `CART`, `PLACED` — note `PLACED` is effectively superseded by `PAID`/`PAYMENT_FAILED` going forward; keep `PLACED` in the codebase for backward compatibility with any v1/v2/v3 test data, but new checkouts never land there again).
+`Order.status` gains three new valid values: `PENDING_PAYMENT`, `PAID`, `PAYMENT_FAILED` (in addition to v1's `CART`, `PLACED` — note `PLACED` is effectively superseded by `PAID`/`PAYMENT_FAILED` going forward; keep `PLACED` in the codebase for backward compatibility with any v1/v2/v3 test data, but new checkouts never land there again).
 
 ```
 POST /api/orders/checkout/{userId}

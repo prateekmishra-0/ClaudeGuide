@@ -73,7 +73,9 @@ Both endpoints return a flat list of product IDs (or full product summaries — 
 |---|---|---|
 | recommendation-route | `Path=/api/recommendations/**` | `lb://recommendation-service` |
 
-Requires a valid JWT like everything else added after v2 — add it to the authenticated set, not the whitelist.
+Not uniformly authenticated — split by path and method, same pattern v2 established for product/category GETs:
+- `GET /api/recommendations/product/{productId}` — **public, add to the gateway's whitelist**, not the authenticated set. This powers the "you might also like" section on product-detail.html, which is a non-login-gated page per v1 — gating this behind a token would silently break recommendations for every anonymous visitor, the same contradiction v2's original (uncorrected) filter spec had with catalog browsing.
+- `GET /api/recommendations/user/{userId}` — **authenticated, stays in the JWT-required set**. This is already only ever called from a login-gated context (home.html's "Recommended for you" section, rendered only for logged-in users per Section 5), so no whitelist entry is needed or correct here.
 
 ---
 
@@ -111,4 +113,6 @@ Logged-out users see the plain v1 product grid on the homepage with no recommend
 - [ ] A brand-new product with zero order history falls back correctly to Rule 2 (same-category results)
 - [ ] `/api/recommendations/user/{userId}` returns results for a user with at least one PLACED order, and doesn't recommend a product the user already bought
 - [ ] Manually break product-service or order-service (stop it) and confirm recommendation-service's endpoints return an empty list, not a 500
-- [ ] Frontend: product detail page shows the "you might also like" section; homepage shows "recommended for you" only when logged in
+- [ ] `GET /api/recommendations/product/{id}` works through the gateway with NO token present — confirm the "you might also like" section renders for a logged-out visitor on product-detail.html
+- [ ] `GET /api/recommendations/user/{userId}` without a token returns 401 from the gateway
+- [ ] Frontend: product detail page shows the "you might also like" section (logged in AND logged out); homepage shows "recommended for you" only when logged in

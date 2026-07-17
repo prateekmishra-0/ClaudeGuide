@@ -28,7 +28,7 @@ No new entities in v2. This version is entirely about the request path and auth 
 
 | Route ID | Predicate | Destination | Notes |
 |---|---|---|---|
-| product-route | `Path=/api/products/**,/api/categories/**` | `lb://product-service` | `lb://` = resolved via Eureka, load-balanced |
+| product-route | `Path=/api/products/**,/api/categories/**` | `lb://product-service` | `lb://` = resolved via Eureka, load-balanced. GET requests on this path are public (see 2.2) — browsing the catalog must not require login, carrying forward v1's anonymous-browsing behavior. Any non-GET method on this same path (POST/PUT/DELETE, still admin-only in practice) requires a valid token. |
 | user-route | `Path=/api/users/**` | `lb://user-service` | `/register` and `/login` on this path must bypass the JWT filter (see 2.2) — everything else on it requires a valid token |
 | order-route | `Path=/api/orders/**` | `lb://order-service` | requires a valid token |
 
@@ -36,8 +36,8 @@ No new entities in v2. This version is entirely about the request path and auth 
 
 A custom `GlobalFilter` (Spring Cloud Gateway's filter type, not a Servlet `Filter` like v1's pattern would suggest — Gateway runs on a reactive stack) that:
 
-1. Skips validation entirely for `POST /api/users/register` and `POST /api/users/login` (whitelist by exact path, same idea as the Swagger whitelist pattern in your reference guide's `SecretKeyFilter`)
-2. For everything else, reads the `Authorization: Bearer <token>` header
+1. Skips validation entirely for: `POST /api/users/register`, `POST /api/users/login`, and any GET request matching `/api/products/**` or `/api/categories/**` (whitelist by exact path + method, same idea as the Swagger whitelist pattern in your reference guide's `SecretKeyFilter`). The product/category GET whitelist is not optional — v1's frontend serves the homepage and product-detail pages to logged-out visitors, and v3's recommendation widget on product-detail also depends on anonymous access continuing to work; gating these behind a token would silently break both.
+2. For everything else (all order-service paths, all non-GET product/category requests, all user-service paths except register/login), reads the `Authorization: Bearer <token>` header
 3. Validates the JWT signature using the shared HMAC secret (see 3.2)
 4. On missing/invalid/expired token → short-circuits the chain, returns 401 directly from the gateway, request never reaches the downstream service
 5. On valid token → forwards the request unchanged downstream (downstream services do **not** re-validate the JWT in v2 — that's a deliberate simplification, see Known Limitations)
@@ -119,6 +119,7 @@ If any item fails the stock check in step 2 → checkout aborts, returns 409, ca
 - No role enforcement despite the `role` claim existing — anyone with a valid token can call any authenticated endpoint
 - No circuit breaker if product-service or user-service is down — gateway calls just fail through with a raw error (v5)
 - No compensation logic if the server crashes mid-way through decrementing multiple items in one checkout (v4 introduces the pattern via payment-failure restock; a mid-decrement crash specifically is a known gap even after v4, worth naming in your final "known limitations" writeup)
+- `userId` taken from the path variable (e.g. `/api/orders/checkout/{userId}`, `/api/orders/cart/{userId}/...`) is never cross-checked against the authenticated identity in the JWT (`sub` claim, forwarded as `X-User-Id`) — a logged-in user could act on another user's cart/order/history by changing the path id. This is a stated gap, not fixed until role/ownership enforcement is added; acceptable for a demo project with no real user data at stake, but worth naming explicitly rather than leaving unstated.
 
 ---
 
@@ -126,7 +127,8 @@ If any item fails the stock check in step 2 → checkout aborts, returns 409, ca
 
 - [ ] api-gateway dashboard/logs show routes registered for all three backend services
 - [ ] `/api/users/register` and `/api/users/login` work with no token required
-- [ ] Any other endpoint without a token returns 401 from the gateway (check logs — request should never reach the downstream service)
+- [ ] Any authenticated endpoint (order-service paths, non-GET product/category requests, `/api/users/me`) without a token returns 401 from the gateway (check logs — request should never reach the downstream service)
+- [ ] GET `/api/products`, `GET /api/products/{id}`, and `GET /api/categories` all work with NO token present — confirm the homepage and product-detail pages still render correctly for a logged-out visitor through the gateway
 - [ ] Login returns a JWT; decode it manually (jwt.io or similar) and confirm `sub`, `email`, `role`, `exp` are present and correct
 - [ ] Checkout with sufficient stock: stock visibly decreases in product-service afterward
 - [ ] Checkout with insufficient stock: returns 409, cart remains `CART`, stock unchanged

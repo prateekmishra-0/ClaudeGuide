@@ -16,6 +16,7 @@
 | all backend services | `springdoc-openapi` / Swagger UI (Section 4) |
 | order-service, recommendation-service | targeted tests (Section 5) |
 | api-gateway | one security test (Section 5) |
+| order-service, recommendation-service | Ownership enforcement: path `{userId}` cross-checked against the JWT-derived `X-User-Id` header (Section 2.4) |
 
 ---
 
@@ -42,6 +43,23 @@ Add `spring-boot-starter-actuator` + `resilience4j-spring-boot3` to the services
 ### 2.3 api-gateway fallback route
 
 A generic fallback endpoint (e.g. `/fallback`) that any route can be configured to hit when its target circuit is open. Returns a clean JSON body: `{"status": 503, "message": "Service temporarily unavailable"}` instead of letting a raw connection-refused exception leak to the frontend as an ugly stack trace.
+### 2.4 Ownership enforcement on path-scoped endpoints
+
+v2 introduced the JWT and the gateway's `X-User-Id` header, but never cross-checked it against the `{userId}` path variable used throughout order-service and recommendation-service — a gap named explicitly in v2's Known Limitations. v5 closes it.
+
+**Affected endpoints:**
+- order-service: `GET /api/orders/cart/{userId}`, `POST /api/orders/cart/{userId}/items`, `DELETE /api/orders/cart/{userId}/items/{itemId}`, `POST /api/orders/checkout/{userId}`, `GET /api/orders/history/{userId}`
+- recommendation-service: `GET /api/recommendations/user/{userId}`
+
+**Mechanism:** one `HandlerInterceptor` per service (not per-endpoint logic) — `preHandle` extracts `{userId}` from the request path, compares it to the `X-User-Id` header forwarded by the gateway, and throws a new `ForbiddenException` on mismatch. Register it via a `WebMvcConfigurer`, applied only to the path patterns above — same registration pattern frontend-service's `LoginRequiredInterceptor` already uses (v1 Part B), just enforcing ownership instead of presence.
+
+| Aspect | Behavior |
+|---|---|
+| Trigger | `X-User-Id` header value does not match the `{userId}` path variable |
+| Response | 403 Forbidden, `{"message": "You are not authorized to access this resource"}` — a new `ForbiddenException` wired into each service's existing `GlobalExceptionHandler`, same pattern as every other custom exception in the project |
+| Not in scope | Role-based authorization (e.g. an ADMIN-only endpoint) is still not enforced anywhere despite the `role` claim existing — that remains a deliberate, stated limitation, not addressed by this section. This section only fixes *ownership* (is this your own resource?), not *permission tiers* (what does your role allow?). |
+
+This does not touch product-service, user-service, payment-service, notification-service, api-gateway, or frontend-service — the gateway already forwards `X-User-Id` correctly (v2 Section 3.3), and frontend-service already only ever sends the logged-in user's own id (the exploit path is hand-crafted requests via Postman/curl, not normal UI use).
 
 ---
 
@@ -93,8 +111,7 @@ Three or four tests like these, each provably tied to a specific design decision
 ---
 
 ## 6. Not code: the "known limitations" writeup
-
-Write this yourself, not via Copilot/Amazon Q — it belongs in your top-level `architecture.md` (the human-only master file), not in this AI-facing file. Pull together every "Known limitations" section from `architecture-v1.md` through this file into one honest paragraph or table covering: no message broker (direct REST instead of events), no saga/distributed-transaction framework (manual compensation in order-service instead), no real payment gateway, single Postgres instance with per-service schemas instead of fully separate database servers, no refresh tokens, no role enforcement despite the JWT carrying a role claim. Frame each as a stated trade-off with a reason, not an accident — that's the difference this whole file structure has been building toward.
+- Note: the `userId`-vs-JWT ownership gap named in `architecture-v2.md`'s Known Limitations is now closed as of v5 Section 2.4 — do not carry it forward into this writeup as an unresolved item. Role-based authorization (the `role` claim existing but never being checked) remains unresolved and should still be included.
 
 ---
 
@@ -107,3 +124,6 @@ Write this yourself, not via Copilot/Amazon Q — it belongs in your top-level `
 - [ ] The four tests in Section 5 pass
 - [ ] The known-limitations writeup exists in `architecture.md` and covers every item listed in Section 6
 - [ ] Full end-to-end walkthrough (register → browse → view products → cart → checkout with a real payment success → checkout with a forced payment failure → recommendations reflect purchase/view history) works with zero unhandled errors anywhere in the chain
+- [ ] Log in as user A, obtain their JWT, attempt `GET /api/orders/cart/{userB's id}` using user A's token — confirm 403, not 200
+- [ ] Same check repeated for checkout, history, and recommendation-service's user endpoint — confirm all five affected endpoints reject a mismatched userId with 403
+- [ ] Confirm a matching userId (own resource) still returns 200 as before — the interceptor must not break the normal, correct-owner case
