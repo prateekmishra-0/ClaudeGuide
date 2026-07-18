@@ -115,6 +115,8 @@ Same principle as 3.2 — simple, explainable, no ML.
 | payment-route | `Path=/api/payments/**` | `lb://payment-service` |
 | notification-route | `Path=/api/notifications/**` | `lb://notification-service` — only needed if you expose a manual trigger/lookup; if notification-service is purely called service-to-service from order-service with no external route, this entry is optional |
 
+Both entries (if notification-route is included at all) are appended to the same `spring.cloud.gateway.server.webmvc.routes` list from v2/v3 — not a new property block. See promptrule.md's route-configuration rule.
+
 Both require a valid JWT, same as everything since v2.
 
 ---

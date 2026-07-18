@@ -66,7 +66,7 @@ ProductController — base path /api/products
 - POST /api/products — @Valid @RequestBody, create, return 201 with the created entity
 - PUT /api/products/{id} — @Valid @RequestBody, full replace of an existing product's fields (not createdAt), 404 via ProductNotFoundException if the id doesn't exist
 - DELETE /api/products/{id} — hard delete, return 204, 404 via ProductNotFoundException if the id doesn't exist
-- PATCH /api/products/{id}/stock — request body: a simple record/DTO with a single field "delta" (Integer, can be negative or positive); apply stockQuantity += delta; if the resulting stockQuantity would be negative, throw InsufficientStockException and do not save the change; otherwise save and return the updated product
+- PUT /api/products/{id}/stock — request body: a simple record/DTO with a single field "delta" (Integer, can be negative or positive); apply stockQuantity += delta; if the resulting stockQuantity would be negative, throw InsufficientStockException and do not save the change; otherwise save and return the updated product. Use @PutMapping, not @PatchMapping — this project's default Feign client does not support PATCH (throws a ProtocolException at runtime when order-service calls it in v2), and PUT avoids that without any new dependency.
 
 EXCEPTION HANDLING (package: com.ecommerce.productservice.exception):
 - Custom exception: ProductNotFoundException extends RuntimeException (constructor takes a String message)
@@ -88,8 +88,8 @@ Test class: ProductControllerTest
 - Annotated @WebMvcTest(ProductController.class) — loads only the web layer, not the full application context or a real database
 - Mock ProductRepository with @MockBean
 - Use MockMvc to send requests and assert on HTTP status + JSON body
-1. patchStock_whenResultingQuantityWouldBeNegative_returns409 — mock a Product with stockQuantity = 5, send PATCH /api/products/{id}/stock with {"delta": -10}, assert status 409 and that the response body's "message" field is present and non-empty
-2. patchStock_whenResultingQuantityIsValid_returns200AndUpdatedQuantity — mock a Product with stockQuantity = 5, send PATCH with {"delta": -2}, assert status 200 and that the returned product's stockQuantity is 3
+1. updateStock_whenResultingQuantityWouldBeNegative_returns409 — mock a Product with stockQuantity = 5, send PUT /api/products/{id}/stock with {"delta": -10}, assert status 409 and that the response body's "message" field is present and non-empty
+2. updateStock_whenResultingQuantityIsValid_returns200AndUpdatedQuantity — mock a Product with stockQuantity = 5, send PUT with {"delta": -2}, assert status 200 and that the returned product's stockQuantity is 3
 3. getProduct_whenIdDoesNotExist_returns404 — mock the repository to return Optional.empty(), send GET /api/products/9999, assert status 404
 4. createProduct_whenValid_returns201WithCreatedEntity — mock the repository's save() to return a Product with an assigned id, send a valid POST body, assert status 201 and that the response contains the expected fields
 
@@ -115,6 +115,6 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 Do NOT use org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest or org.springframework.boot.test.mock.mockito.MockBean — both are Spring Boot 3.x-era paths that no longer exist in 4.1.0.
 
 VERIFICATION (tell me how to confirm this works):
-- List the exact curl or Postman requests to test: create a category, create 2-3 products under it, list products, get one by id, update one, PATCH its stock down until InsufficientStockException triggers (409), delete one, then attempt to create a category with a name that already exists and confirm it returns 409 with a clear message (not a generic 500).
+- List the exact curl or Postman requests to test: create a category, create 2-3 products under it, list products, get one by id, update one, PUT its stock down until InsufficientStockException triggers (409), delete one, then attempt to create a category with a name that already exists and confirm it returns 409 with a clear message (not a generic 500).
 - Also tell me the exact Maven command to run just the two new test classes, and what a fully-passing console output should look like.
 ```

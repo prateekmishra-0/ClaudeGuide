@@ -84,6 +84,8 @@ Note that recommendation-service's calls also need a valid `X-Internal-Secret` h
 |---|---|---|
 | recommendation-route | `Path=/api/recommendations/**` | `lb://recommendation-service` |
 
+This entry is appended to api-gateway's existing `spring.cloud.gateway.server.webmvc.routes` list from v2 (alongside product-route, user-route, order-route) — not a new property block, not a new file. See promptrule.md's route-configuration rule if the prompt for this section is being written by a chat that hasn't seen v2's api-gateway prompt.
+
 Not uniformly authenticated — split by path and method, same pattern v2 established for product/category GETs:
 - `GET /api/recommendations/product/{productId}` — **public, add to the gateway's whitelist**, not the authenticated set. This powers the "you might also like" section on product-detail.html, which is a non-login-gated page per v1 — gating this behind a token would silently break recommendations for every anonymous visitor, the same contradiction v2's original (uncorrected) filter spec had with catalog browsing.
 - `GET /api/recommendations/user/{userId}` — **authenticated, stays in the JWT-required set**. This is already only ever called from a login-gated context (home.html's "Recommended for you" section, rendered only for logged-in users per Section 5), so no whitelist entry is needed or correct here.

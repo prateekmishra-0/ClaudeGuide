@@ -43,7 +43,7 @@ Add `spring-boot-starter-actuator` + `resilience4j-spring-boot3` to the services
 
 ### 2.3 api-gateway fallback route
 
-A generic fallback endpoint (e.g. `/fallback`) that any route can be configured to hit when its target circuit is open. Returns a clean JSON body: `{"status": 503, "message": "Service temporarily unavailable"}` instead of letting a raw connection-refused exception leak to the frontend as an ugly stack trace.
+A generic fallback endpoint (e.g. `/fallback`) that any route can be configured to hit when its target circuit is open. Returns a clean JSON body: `{"status": 503, "message": "Service temporarily unavailable"}` instead of letting a raw connection-refused exception leak to the frontend as an ugly stack trace. Whatever the v5 prompt lands on for wiring this — a `CircuitBreaker` filter added to an existing route entry, or a plain local `@RestController` endpoint the filter forwards to — it must use the webmvc-package `CircuitBreaker` filter (`org.springframework.cloud.gateway.server.mvc.filter`), not the reactive one, and any filter config still lives under `spring.cloud.gateway.server.webmvc.routes`, consistent with every other route since v2. This section is under-specified on purpose (the exact mechanism isn't chosen yet) — resolve the implementation detail when the v5 api-gateway prompt is actually written, not now.
 
 ### 2.4 Ownership enforcement on path-scoped endpoints
 

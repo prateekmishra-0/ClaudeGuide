@@ -11,15 +11,15 @@ Existing files in this project (do not regenerate these from scratch — you are
 CONFIGURATION FILE CHANGE:
 - File: src/main/resources/application.yaml
 - Add this one new key (keep every existing key exactly as it is — datasource, JPA, Eureka, port, etc. — do not remove or modify anything already there):
-  internal.secret: <PASTE_YOUR_INTERNAL_SECRET_HERE> — this exact string must be the SAME value already placed in api-gateway's and user-service's application.yml/application.yaml files, and the same value that will also go into order-service's config in a separate prompt. Do not generate a new value.
+  internal.secret: arhjYkqjrB6INMZvZjOApL6jk0b6LWJVnsEYl29kMY0= — this exact string must be the SAME value already placed in api-gateway's and user-service's application.yml/application.yaml files, and the same value that will also go into order-service's config in a separate prompt. Do not generate a new value.
 
 NEW CLASS (package: com.ecommerce.productservice.security):
 - Class: InternalSecretFilter, extends OncePerRequestFilter, annotated @Component
 - Reads internal.secret from application.yaml via @Value
 - In doFilterInternal(request, response, filterChain):
-    1. Read header "X-Internal-Secret" from the request
-    2. If missing OR does not exactly equal the configured internal.secret value, write HTTP status 401 directly to the response, set content type application/json, write body {"message": "Forbidden — direct access not permitted"}, and RETURN without calling filterChain.doFilter() — the request must never reach any controller
-    3. If it matches, call filterChain.doFilter(request, response) to let the request proceed normally
+  1. Read header "X-Internal-Secret" from the request
+  2. If missing OR does not exactly equal the configured internal.secret value, write HTTP status 401 directly to the response, set content type application/json, write body {"message": "Forbidden — direct access not permitted"}, and RETURN without calling filterChain.doFilter() — the request must never reach any controller
+  3. If it matches, call filterChain.doFilter(request, response) to let the request proceed normally
 - This filter applies to EVERY endpoint in this service with NO exceptions — including GET /api/products and GET /api/categories, which remain publicly reachable to end-users only via api-gateway (which attaches this header on their behalf), never directly. There is no whitelist in this filter.
 - This filter has nothing to do with JWTs or user identity — product-service never sees a JWT at all, in this or any prior version. This is a simple, unconditional string-equality check against one fixed header value, unrelated to any user-level authentication.
 

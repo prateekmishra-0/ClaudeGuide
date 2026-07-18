@@ -13,7 +13,7 @@ Existing files in this project (do not regenerate these from scratch — you are
 CONFIGURATION FILE CHANGE:
 - File: src/main/resources/application.yaml
 - Add this one new key (keep every existing key exactly as it is):
-  internal.secret: <PASTE_YOUR_INTERNAL_SECRET_HERE> — this exact string must be the SAME value already placed in api-gateway's, user-service's, and product-service's config. Do not generate a new value.
+  internal.secret: arhjYkqjrB6INMZvZjOApL6jk0b6LWJVnsEYl29kMY0= — this exact string must be the SAME value already placed in api-gateway's, user-service's, and product-service's config. Do not generate a new value.
 
 PART A — INCOMING: internal-secret checker filter
 
@@ -21,9 +21,9 @@ NEW CLASS (package: com.ecommerce.orderservice.security):
 - Class: InternalSecretFilter, extends OncePerRequestFilter, annotated @Component
 - Reads internal.secret from application.yaml via @Value
 - In doFilterInternal(request, response, filterChain):
-    1. Read header "X-Internal-Secret" from the request
-    2. If missing OR does not exactly equal the configured internal.secret value, write HTTP status 401 directly to the response, set content type application/json, write body {"message": "Forbidden — direct access not permitted"}, and RETURN without calling filterChain.doFilter()
-    3. If it matches, call filterChain.doFilter(request, response)
+  1. Read header "X-Internal-Secret" from the request
+  2. If missing OR does not exactly equal the configured internal.secret value, write HTTP status 401 directly to the response, set content type application/json, write body {"message": "Forbidden — direct access not permitted"}, and RETURN without calling filterChain.doFilter()
+  3. If it matches, call filterChain.doFilter(request, response)
 - Applies to EVERY endpoint in this service with NO exceptions, no whitelist.
 - Unrelated to JWTs — order-service never sees a JWT, it trusts X-User-Id/X-User-Email headers forwarded by the gateway, and this filter is what makes that trust reasonable (it guarantees the request came through the gateway in the first place).
 
@@ -58,19 +58,19 @@ MODIFY: GlobalExceptionHandler (package: com.ecommerce.orderservice.exception)
 
 MODIFY: OrderService (package: com.ecommerce.orderservice.service)
 - Method checkout(Long userId) — replace the entire v1 method body:
-    1. Find the CART order via findByUserIdAndStatus(userId, "CART"); if none exists OR zero items, throw EmptyCartException
-    2. VALIDATION PASS — for EVERY item, call productServiceClient.getProduct(item.getProductId()), compare returned stockQuantity against requested quantity. If any item's quantity exceeds available stock, throw InsufficientStockException naming the product and available amount — before mutating anything
-    3. MUTATION PASS — only after every item passes validation, for EVERY item call productServiceClient.adjustStock(item.getProductId(), new StockAdjustRequest(-item.getQuantity())). Wrap each call in try/catch for feign.FeignException.Conflict (race-condition case); if caught, re-throw as InsufficientStockException noting the race
-    4. Set status to "PLACED", save, return it
+  1. Find the CART order via findByUserIdAndStatus(userId, "CART"); if none exists OR zero items, throw EmptyCartException
+  2. VALIDATION PASS — for EVERY item, call productServiceClient.getProduct(item.getProductId()), compare returned stockQuantity against requested quantity. If any item's quantity exceeds available stock, throw InsufficientStockException naming the product and available amount — before mutating anything
+  3. MUTATION PASS — only after every item passes validation, for EVERY item call productServiceClient.adjustStock(item.getProductId(), new StockAdjustRequest(-item.getQuantity())). Wrap each call in try/catch for feign.FeignException.Conflict (race-condition case); if caught, re-throw as InsufficientStockException noting the race
+  4. Set status to "PLACED", save, return it
 - Do not change getOrCreateCart, addItemToCart, removeItemFromCart, or getOrderHistory.
 
 UPDATE EXISTING TEST: OrderServiceTest (package: com.ecommerce.orderservice.service, in src/test/java)
 - Keep tests 1, 2, 3, 5 exactly as they are
 - Test 4 needs updating: mock productServiceClient.getProduct() with sufficient stock and productServiceClient.adjustStock() to not throw, for each mocked cart item; assertion stays the same
 - Add tests 6, 7, 8:
-    6. checkout_whenAnyItemHasInsufficientStock_throwsInsufficientStockException_andNeverCallsAdjustStock — two items, item 2 has insufficient stock; assert exception thrown and adjustStock never called for either item
-    7. checkout_whenAllItemsHaveSufficientStock_callsAdjustStockForEveryItemWithCorrectNegativeDelta — two items, both sufficient; verify adjustStock called once per item with correct negative delta via ArgumentCaptor
-    8. checkout_whenAdjustStockThrowsConflictDuringMutationPass_throwsInsufficientStockException — one item passes validation, adjustStock throws feign.FeignException.Conflict; assert our own InsufficientStockException thrown
+  6. checkout_whenAnyItemHasInsufficientStock_throwsInsufficientStockException_andNeverCallsAdjustStock — two items, item 2 has insufficient stock; assert exception thrown and adjustStock never called for either item
+  7. checkout_whenAllItemsHaveSufficientStock_callsAdjustStockForEveryItemWithCorrectNegativeDelta — two items, both sufficient; verify adjustStock called once per item with correct negative delta via ArgumentCaptor
+  8. checkout_whenAdjustStockThrowsConflictDuringMutationPass_throwsInsufficientStockException — one item passes validation, adjustStock throws feign.FeignException.Conflict; assert our own InsufficientStockException thrown
 - Do NOT add any test for InternalSecretFilter or FeignInternalSecretInterceptor in this class — both are outside the scope of a plain Mockito unit test on OrderService; manual verification (below) covers them.
 
 CONSTRAINTS:

@@ -54,6 +54,7 @@ REPOSITORIES (package: com.ecommerce.orderservice.repository):
   - Add method: Optional<Order> findByUserIdAndStatus(Long userId, String status)
   - Add method: List<Order> findByUserIdAndStatusNot(Long userId, String excludedStatus) — used for order history (everything that isn't a live CART)
 - OrderItemRepository extends JpaRepository<OrderItem, Long>
+  - Add method: Optional<OrderItem> findByOrderAndProductId(Order order, Long productId) — used to detect whether the product being added is already a line item in this cart, so a repeat add-to-cart increments quantity instead of creating a duplicate row
 
 DTOs (package: com.ecommerce.orderservice.dto):
 - AddItemRequest: productId (Long, @NotNull), quantity (Integer, @NotNull, @Min(1))
@@ -70,7 +71,10 @@ FEIGN CLIENT (package: com.ecommerce.orderservice.client):
 SERVICE LAYER (package: com.ecommerce.orderservice.service):
 - Class: OrderService (a real @Service class here, not controller-calls-repository-directly like product-service — this service has enough logic to warrant it)
 - Method: Order getOrCreateCart(Long userId) — finds the existing CART order for the user via findByUserIdAndStatus, or creates and saves a new one with status "CART" if none exists
-- Method: OrderItem addItemToCart(Long userId, AddItemRequest request) — calls getOrCreateCart, then calls ProductServiceClient.getProduct(request.getProductId()); wrap this call in a try/catch for feign.FeignException.NotFound and re-throw as our own ProductNotFoundException with a clear message; on success, creates an OrderItem with the snapshot fields populated from the Feign response, saves it, returns it
+- Method: OrderItem addItemToCart(Long userId, AddItemRequest request) — calls getOrCreateCart to get the current CART order, then calls orderItemRepository.findByOrderAndProductId(cart, request.getProductId()) to check whether this product already has a line item in the cart.
+    - If found: increment its quantity by request.getQuantity() (do NOT call ProductServiceClient again — keep the existing productNameSnapshot/priceSnapshot as they were at the time of the first add), save, return it.
+    - If not found: proceed exactly as before — call ProductServiceClient.getProduct(request.getProductId()), catch feign.FeignException.NotFound and re-throw as ProductNotFoundException, create a new OrderItem with snapshot fields from the Feign response, save, return it.
+  Adding the same product to the same cart twice must always result in one line item whose quantity is the sum of both adds — never two rows for the same productId in one cart order.
 - Method: void removeItemFromCart(Long itemId) — deletes the OrderItem by id; throw OrderItemNotFoundException if it doesn't exist
 - Method: Order checkout(Long userId) — finds the CART order via findByUserIdAndStatus; if none exists OR it has zero items, throw EmptyCartException; otherwise set status to "PLACED", save, return it
 - Method: List<Order> getOrderHistory(Long userId) — returns findByUserIdAndStatusNot(userId, "CART")
@@ -108,6 +112,7 @@ Test class: OrderServiceTest
 3. checkout_whenCartHasZeroItems_throwsEmptyCartException — mock findByUserIdAndStatus to return a CART order with an empty items list, call checkout, assert EmptyCartException is thrown, and assert orderRepository.save() was NEVER called (Mockito.verify(...,never()))
 4. checkout_whenCartHasItems_setsStatusToPlacedAndSaves — mock findByUserIdAndStatus to return a CART order with at least one item, call checkout, capture the Order passed to save(), assert its status field equals "PLACED"
 5. getOrCreateCart_whenNoCartExists_createsAndSavesNewCartOrder — mock findByUserIdAndStatus to return Optional.empty(), call getOrCreateCart, assert orderRepository.save() was called exactly once with a new Order whose status is "CART" and userId matches the input
+6. addItemToCart_whenProductAlreadyInCart_incrementsExistingQuantityInsteadOfCreatingDuplicate — mock findByUserIdAndStatus to return an existing CART order, mock findByOrderAndProductId to return an existing OrderItem with quantity 2, call addItemToCart with quantity 3, capture the OrderItem passed to save(), assert quantity == 5, and verify productServiceClient.getProduct() was NEVER called (Mockito.verify(..., never()))
 
 CONSTRAINTS:
 - Do not decrement or otherwise touch product-service's stock in this version — checkout only flips status, nothing more. Stock mutation is a later version's addition.

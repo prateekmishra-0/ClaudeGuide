@@ -63,7 +63,7 @@ Plain `spring-cloud-starter-netflix-eureka-server` app. No entities, no REST end
 | POST | `/api/products` | create product | admin use |
 | PUT | `/api/products/{id}` | update product | full replace |
 | DELETE | `/api/products/{id}` | hard delete | |
-| PATCH | `/api/products/{id}/stock` | adjust stock | body: `{"delta": -2}` — used by order-service at checkout in v2+; not called by anything yet in v1, but build it now so v2's inventory work doesn't require a schema change |
+| PUT | `/api/products/{id}/stock` | adjust stock | body: `{"delta": -2}` — used by order-service at checkout in v2+; not called by anything yet in v1, but build it now so v2's inventory work doesn't require a schema change. Deliberately PUT, not PATCH — this project's default Feign client (no custom `feign.Client` bean, no extra HTTP-client dependency) throws `Invalid HTTP method: PATCH` at the transport layer when order-service calls this in v2's checkout flow. PUT avoids that with zero new dependencies, and is used here from the start so v1 and v2 never disagree on the verb. |
 
 ### 3.3 Validation / error behavior
 
@@ -134,7 +134,7 @@ Cart and order are the same entity in v1, distinguished by `status`. Splitting t
 | Method | Path | Purpose | Notes |
 |---|---|---|---|
 | GET | `/api/orders/cart/{userId}` | view current cart | finds or implicitly treats "no CART order" as an empty cart |
-| POST | `/api/orders/cart/{userId}/items` | add item to cart | body: productId, quantity. Calls product-service (`GET /api/products/{id}`) to fetch name+price for the snapshot fields and to confirm the product exists; 404 if product-service says it doesn't |
+| POST | `/api/orders/cart/{userId}/items` | add item to cart | body: productId, quantity. First checks whether this productId already exists as a line item on the user's current CART order — if so, increments that line's `quantity` in place and does **not** re-call product-service (the existing snapshot fields are left untouched, since they were correct at the time of the first add). Only if the product isn't already in the cart does it call product-service (`GET /api/products/{id}`) to fetch name+price for a new line item's snapshot fields and confirm the product exists; 404 if product-service says it doesn't. Adding the same product twice must always converge to one line item with a summed quantity — never two rows for the same productId in one cart order. |
 | DELETE | `/api/orders/cart/{userId}/items/{itemId}` | remove item from cart | |
 | POST | `/api/orders/checkout/{userId}` | finalize the cart | transitions the CART order to PLACED; 400 if cart is empty; does **not** touch stock yet — that's the `/stock` endpoint wired up in v2 |
 | GET | `/api/orders/history/{userId}` | list PLACED orders for a user | |
@@ -197,5 +197,5 @@ If you can walk through this exact sequence manually (Postman or the actual fron
 - [ ] eureka-server dashboard shows all 4 other services registered
 - [ ] product-service: create category, create 3+ products, list, get-by-id, update, delete all work via Postman
 - [ ] user-service: register succeeds, duplicate email returns 409, login returns a token, bad password returns 401, `/me` resolves correctly with the token
-- [ ] order-service: add-to-cart correctly snapshots name/price from a live product-service call, checkout flips status, history returns only PLACED orders
+- [ ] order-service: add-to-cart correctly snapshots name/price from a live product-service call on the *first* add; adding the same product a second time increments the existing line's quantity instead of creating a duplicate row; checkout flips status; history returns only PLACED orders
 - [ ] frontend: full manual walkthrough of Section 7 works with zero errors in the browser

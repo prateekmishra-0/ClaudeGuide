@@ -11,9 +11,9 @@ Existing files in this project (do not regenerate these from scratch — you are
 CONFIGURATION FILE CHANGE:
 - File: src/main/resources/application.yaml
 - Add these three new keys (keep every existing key exactly as it is — datasource, JPA, Eureka, port, etc. — do not remove or modify anything already there):
-  jwt.secret: <PASTE_YOUR_JWT_SECRET_HERE> — this exact string must also be placed in api-gateway's application.yml in a separate prompt; treat it as a fixed shared value, not something to regenerate
+  jwt.secret: 0bXHZaF1C3tnxFtxM1IcLYCxCQCv1z1a4eX2KKkGlck= — this exact string must also be placed in api-gateway's application.yml in a separate prompt; treat it as a fixed shared value, not something to regenerate
   jwt.expiration-ms: 7200000
-  internal.secret: <PASTE_YOUR_INTERNAL_SECRET_HERE> — a SEPARATE, DIFFERENT string from jwt.secret above; this one will also be placed in api-gateway's, product-service's, and order-service's application.yml files in separate prompts; do not confuse the two values or use the same string for both
+  internal.secret: arhjYkqjrB6INMZvZjOApL6jk0b6LWJVnsEYl29kMY0= — a SEPARATE, DIFFERENT string from jwt.secret above; this one will also be placed in api-gateway's, product-service's, and order-service's application.yml files in separate prompts; do not confuse the two values or use the same string for both
 
 DELETE THIS FILE:
 - src/main/java/com/ecommerce/userservice/session/SessionStore.java — the in-memory token map is no longer needed now that JWTs are self-contained. Delete this file entirely.
@@ -22,12 +22,12 @@ NEW CLASS (package: com.ecommerce.userservice.security):
 - Class: JwtService, annotated @Component
 - Reads jwt.secret and jwt.expiration-ms from application.yaml via @Value
 - Method: String generateToken(User user) — builds a JWT using the jjwt 0.12.x fluent builder API (Jwts.builder()...), with these claims:
-    - subject (sub): user.getId() converted to String
-    - claim "email": user.getEmail()
-    - claim "role": user.getRole()
-    - issuedAt: now
-    - expiration: now + the configured jwt.expiration-ms
-    - signed with HMAC-SHA256 using a SecretKey derived from jwt.secret (use Keys.hmacShaKeyFor() on the UTF-8 bytes of the secret)
+  - subject (sub): user.getId() converted to String
+  - claim "email": user.getEmail()
+  - claim "role": user.getRole()
+  - issuedAt: now
+  - expiration: now + the configured jwt.expiration-ms
+  - signed with HMAC-SHA256 using a SecretKey derived from jwt.secret (use Keys.hmacShaKeyFor() on the UTF-8 bytes of the secret)
 - Return the compact serialized JWT string (a plain String) — this is what LoginResponse.token will now contain, no change needed to the LoginResponse DTO shape itself
 
 NEW CLASS (package: com.ecommerce.userservice.security):
@@ -35,9 +35,9 @@ NEW CLASS (package: com.ecommerce.userservice.security):
 - Reads internal.secret from application.yaml via @Value
 - Register this filter at the highest precedence so it runs before anything else touches the request — use a separate @Configuration class (FilterConfig, package com.ecommerce.userservice.config) with a @Bean of type FilterRegistrationBean<InternalSecretFilter>, calling .setOrder(Ordered.HIGHEST_PRECEDENCE) explicitly, rather than relying on @Order on the filter class alone
 - In doFilterInternal(request, response, filterChain):
-    1. Read header "X-Internal-Secret" from the request
-    2. If missing OR does not exactly equal the configured internal.secret value, write HTTP status 401 directly to the response, set content type application/json, write body {"message": "Forbidden — direct access not permitted"}, and RETURN without calling filterChain.doFilter() — the request must never reach any controller
-    3. If it matches, call filterChain.doFilter(request, response) to let the request proceed normally
+  1. Read header "X-Internal-Secret" from the request
+  2. If missing OR does not exactly equal the configured internal.secret value, write HTTP status 401 directly to the response, set content type application/json, write body {"message": "Forbidden — direct access not permitted"}, and RETURN without calling filterChain.doFilter() — the request must never reach any controller
+  3. If it matches, call filterChain.doFilter(request, response) to let the request proceed normally
 - This filter applies to EVERY endpoint in this service with NO exceptions — including /api/users/register and /api/users/login, which remain open to end-users only via api-gateway, never directly. There is no whitelist in this filter, unlike the separate JWT logic that will live in api-gateway.
 - This filter has nothing to do with the JWT — do not attempt to parse or validate anything JWT-related here, it is a simple, unconditional string-equality check against one fixed header value.
 
@@ -45,11 +45,11 @@ MODIFY: UserController (package: com.ecommerce.userservice.controller)
 - POST /api/users/register — NO CHANGE to this method's logic at all, leave it exactly as it is
 - POST /api/users/login — change only the success path: instead of calling sessionStore.createSession(user.getId()), call jwtService.generateToken(user) and return that string in LoginResponse.token. The failure path (InvalidCredentialsException on bad email/password) is unchanged.
 - GET /api/users/me — this method's logic changes completely:
-    - Remove the X-Session-Token header parameter and the SessionStore lookup entirely
-    - Instead, read two new headers: X-User-Id (String, parse to Long) and X-User-Email (String) — these are injected by api-gateway after it validates the JWT (built in a separate prompt); user-service does NOT re-validate the JWT itself, it trusts these headers (this trust is now reasonable specifically because InternalSecretFilter above already guarantees the request came through api-gateway, not a direct or spoofed call)
-    - If X-User-Id is missing or blank, throw UnauthorizedException("Missing user identity — request must go through the gateway")
-    - If present, parse the Long, look up the User by id via UserRepository.findById(); if not found throw UnauthorizedException("User not found")
-    - Return 200 with UserResponse built from the looked-up User
+  - Remove the X-Session-Token header parameter and the SessionStore lookup entirely
+  - Instead, read two new headers: X-User-Id (String, parse to Long) and X-User-Email (String) — these are injected by api-gateway after it validates the JWT (built in a separate prompt); user-service does NOT re-validate the JWT itself, it trusts these headers (this trust is now reasonable specifically because InternalSecretFilter above already guarantees the request came through api-gateway, not a direct or spoofed call)
+  - If X-User-Id is missing or blank, throw UnauthorizedException("Missing user identity — request must go through the gateway")
+  - If present, parse the Long, look up the User by id via UserRepository.findById(); if not found throw UnauthorizedException("User not found")
+  - Return 200 with UserResponse built from the looked-up User
 
 UPDATE EXISTING TEST: UserControllerTest (package: com.ecommerce.userservice.controller, in src/test/java)
 - Remove the @MockitoBean for SessionStore entirely — it no longer exists as a class
