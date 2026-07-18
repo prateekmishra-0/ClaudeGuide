@@ -13,10 +13,10 @@
 | api-gateway | 8000 | two new routes (Section 5) |
 | product-service | 8081 | **new entity**: ProductView (Section 2) |
 | user-service | 8082 | unchanged |
-| order-service | 8083 | checkout flow expanded to 3 states, calls payment-service (Section 4) |
+| order-service | 8083 | checkout flow expanded to 3 states, calls payment-service (Section 4); attaches internal-secret on two new outbound calls (Section 6.1) |
 | recommendation-service | 8084 | scoring logic upgraded, calls the new view-tracking data (Section 3) |
-| payment-service | 8085 | **new** |
-| notification-service | 8086 | **new** |
+| payment-service | 8085 | **new** — gains the internal-secret filter (Section 6.1) |
+| notification-service | 8086 | **new** — gains the internal-secret filter (Section 6.1) |
 | frontend-service | 8080 | view-tracking call added, checkout page reflects payment result |
 
 ---
@@ -121,6 +121,17 @@ Both require a valid JWT, same as everything since v2.
 
 ## 6. order-service changes — checkout flow, now 3 states
 
+### 6.1 Internal-secret filter — payment-service, notification-service, and order-service's new outbound calls
+
+Same mechanism as `architecture-v2.md` Section 2.3 and `architecture-v3.md` Section 2.6, extended to this version's two new services:
+
+- **payment-service and notification-service (checkers):** both get the same `OncePerRequestFilter`, `@Order(1)`, checking `X-Internal-Secret` against `internal.secret` in each service's own `application.yml` — no whitelist, applies to every endpoint including `POST /api/payments` and `POST /api/notifications`.
+- **order-service (sender, expanded role):** order-service was already attaching `X-Internal-Secret` on its calls to product-service since v2. This version adds two more outbound calls that need the same header attached: `POST /api/payments` (step 3 of the checkout flow below) and `POST /api/notifications` (steps 4a/4b). All three of order-service's outbound Feign targets — product-service, payment-service, notification-service — now require this header; none of this traffic passes through api-gateway.
+
+**Configuration:** payment-service's and notification-service's `application.yml` each need `internal.secret` set to the same literal string already shared across every other service since v2 — no new value generated for this version. This brings the total to seven services holding this string: api-gateway, product-service, user-service, order-service, recommendation-service, payment-service, notification-service.
+
+As with recommendation-service in v3, a missing or wrong secret on order-service's calls to payment-service/notification-service would surface as a rejected request at the receiving service's filter — worth checking directly if checkout behavior looks wrong (e.g. orders stuck, or notification logs never appearing) before assuming the business logic itself is broken.
+
 `Order.status` gains three new valid values: `PENDING_PAYMENT`, `PAID`, `PAYMENT_FAILED` (in addition to v1's `CART`, `PLACED` — note `PLACED` is effectively superseded by `PAID`/`PAYMENT_FAILED` going forward; keep `PLACED` in the codebase for backward compatibility with any v1/v2/v3 test data, but new checkouts never land there again).
 
 ```
@@ -165,6 +176,7 @@ If you have spare time near the end of the project, swapping the log line for a 
 - Restock-on-payment-failure is the only compensation logic in the system — a crash between steps in the checkout flow (e.g. server dies after decrementing stock but before calling payment-service) leaves the order stuck in an inconsistent state with no automatic recovery; acceptable to leave unsolved and name explicitly in your final writeup
 - No retry on a failed payment call itself (a payment-service timeout is treated the same as a payment-service rejection) — v5's circuit breaker section addresses this distinction
 - Payment mock logic is deterministic but arbitrary (the `.13` cents rule) — fine for testing, obviously not realistic
+- Same internal-secret caveat as v2/v3 — now seven services hold the identical static string. No new mitigation in v4; still an accepted trade-off for a localhost demo project.
 
 ---
 
@@ -176,3 +188,5 @@ If you have spare time near the end of the project, swapping the log line for a 
 - [ ] A normal payment amount returns SUCCESS, order ends up `PAID`, stock stays decremented (not restocked)
 - [ ] notification-service log output shows a message for both the success and failure paths
 - [ ] Full frontend walkthrough: view a few products, add to cart, checkout, confirm the payment outcome displays correctly
+- [ ] Attempt to hit payment-service (8085) or notification-service (8086) directly, bypassing order-service and api-gateway, with no `X-Internal-Secret` header — confirm 401 from each service's own filter
+- [ ] Confirm a full checkout (success path) actually reaches payment-service and notification-service correctly — if order-service's outbound secret header is missing/wrong, checkout would likely fail in a way that could be mistaken for the `.13`-cents mock-rejection rule or a genuine payment failure; cross-check by confirming payment-service's own logs show the request arriving, not just relying on order-service's final response

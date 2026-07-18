@@ -14,7 +14,7 @@
 | product-service | 8081 | unchanged |
 | user-service | 8082 | unchanged |
 | order-service | 8083 | unchanged |
-| recommendation-service | 8084 | **new** |
+| recommendation-service | 8084 | **new** — gains the internal-secret filter and attaches it on outbound calls (Section 2.6) |
 | frontend-service | 8080 | two new sections added to two templates (Section 5) |
 
 No new entities anywhere. recommendation-service is deliberately stateless — it owns no Postgres schema, no tables. Every call recomputes from live data fetched from order-service and product-service. This is a stated v3 simplification (see Known Limitations), not an oversight.
@@ -65,6 +65,17 @@ This is the one schema-adjacent change in v3, and it lives in order-service, not
 
 Both endpoints return a flat list of product IDs (or full product summaries — resolve name/price/image via product-service before returning, so the frontend doesn't need a second round-trip). If either upstream call (order-service or product-service) fails or returns nothing usable, return an empty list — never a 500. A broken recommendation is a missing widget, not a broken page (this principle carries forward into v5's circuit-breaker fallback, which formalizes this same "fail open, fail empty" behavior).
 
+### 2.6 Internal-secret filter — recommendation-service
+
+Same mechanism introduced in `architecture-v2.md` Section 2.3, applied here in both directions:
+
+- **As a checker:** recommendation-service gets the same `OncePerRequestFilter`, `@Order(1)`, checking `X-Internal-Secret` against `internal.secret` in its own `application.yml` — identical pattern to product-service/user-service/order-service in v2, applied to both of its own endpoints (`GET /api/recommendations/product/{id}`, `GET /api/recommendations/user/{id}`), no whitelist.
+- **As a sender:** recommendation-service calls order-service and product-service directly via Feign (Section 2.1's four dependency calls) — none of this traffic passes through api-gateway. Every one of these four outbound calls must attach `X-Internal-Secret`, or order-service's and product-service's own filters (already active since v2) will reject them with 401, causing recommendation-service's endpoints to silently degrade to the "fail open, fail empty" behavior (Section 2.5) even when the actual data exists — a real request would be rejected before ever reaching the controller, and that failure would look identical to a genuine "no data" case, which is a debugging trap worth being aware of if recommendations mysteriously return empty despite valid data.
+
+**Configuration:** recommendation-service's `application.yml` needs `internal.secret` set to the same literal string already used in api-gateway, product-service, user-service, and order-service — same value, no new secret generated for this version.
+
+Note that recommendation-service's calls also need a valid `X-Internal-Secret` header attached even though it's calling *read-only* GET endpoints on order-service and product-service — the internal-secret filter has no method-based or path-based exceptions (per v2 Section 2.3), it checks every request uniformly.
+
 ---
 
 ## 3. api-gateway change
@@ -103,6 +114,7 @@ Logged-out users see the plain v1 product grid on the homepage with no recommend
 - No view tracking exists yet — recommendations are purchase-history-only (v4)
 - recommendation-service recomputes from scratch on every call, no caching — acceptable at demo data volumes, would need revisiting at real scale
 - Tie-breaking in Rule 1 is undefined (whatever order the map gives) — not worth solving for a project of this size
+- Same internal-secret caveat as v2 (single static, unrotatable shared string) — recommendation-service is now a fourth... fifth service holding it, widening the blast radius slightly if it ever leaks. No new mitigation added in v3; still an accepted trade-off.
 
 ---
 
@@ -116,3 +128,5 @@ Logged-out users see the plain v1 product grid on the homepage with no recommend
 - [ ] `GET /api/recommendations/product/{id}` works through the gateway with NO token present — confirm the "you might also like" section renders for a logged-out visitor on product-detail.html
 - [ ] `GET /api/recommendations/user/{userId}` without a token returns 401 from the gateway
 - [ ] Frontend: product detail page shows the "you might also like" section (logged in AND logged out); homepage shows "recommended for you" only when logged in
+- [ ] Attempt to hit recommendation-service directly on port 8084 (bypassing api-gateway) with no `X-Internal-Secret` header — confirm 401, request never reaches a controller
+- [ ] With everything running correctly, confirm recommendation-service's calls to order-service and product-service succeed (not silently falling into the empty-list fallback due to a missing/wrong secret on its own outbound calls) — cross-check by comparing a known-good recommendation result against manually querying order-service's `containing-product` endpoint directly, to confirm the "empty list" you see (if any) is genuinely due to no data, not a rejected internal call

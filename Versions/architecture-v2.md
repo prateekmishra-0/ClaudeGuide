@@ -11,7 +11,7 @@
 |---|---|---|
 | eureka-server | 8761 | unchanged |
 | api-gateway | 8000 | **new** |
-| product-service | 8081 | `/stock` endpoint now actually used; no entity changes |
+| product-service | 8081 | `/stock` endpoint now actually used; no entity changes; gains the internal-secret filter (Section 2.3) |
 | user-service | 8082 | login now issues JWT instead of an in-memory token; User entity unchanged |
 | order-service | 8083 | checkout flow now calls product-service's stock endpoint; no entity changes |
 | frontend-service | 8080 | now calls everything through the gateway (port 8000) instead of resolving each service by name directly |
@@ -45,6 +45,33 @@ A custom `GlobalFilter` (Spring Cloud Gateway's filter type, not a Servlet `Filt
 No entity, no database — this filter is pure in-memory logic per request.
 
 ---
+
+### 2.3 Internal-secret filter — service-to-service trust
+
+The JWT filter (2.2) proves a *user* is authenticated. It does nothing to stop someone from bypassing the gateway entirely and hitting a backend service's port directly (e.g. `curl localhost:8083/api/orders/checkout/1` with no token at all) — nothing downstream currently checks where a request actually came from. This section closes that gap with a second, independent mechanism: a fixed, shared secret string, unrelated to the JWT, that proves a request passed through api-gateway (or another trusted internal caller — see below), regardless of whether that request also carries a valid JWT.
+
+**The two mechanisms are not interchangeable and both stay:**
+
+| | JWT (2.2) | Internal secret (this section) |
+|---|---|---|
+| Proves | which user is calling | that the caller is a trusted internal service, not an external direct hit |
+| Value | changes per user/session, expires | one fixed string, same on every request, no expiry |
+| Checked by | api-gateway only | every backend service, on every endpoint, no exceptions — including `/register` and `/login`, which are JWT-whitelisted but NOT internal-secret-whitelisted |
+| Attached by | nothing upstream (the browser sends nothing; the gateway is where it's first validated) | any service making an outbound call to another backend service |
+
+**Who attaches it, precisely — this is not "gateway-only":** every service that calls another backend service directly must attach `X-Internal-Secret` on that outbound call, not just api-gateway. In v2 this means:
+- api-gateway attaches it on every request it forwards downstream (to product-service, user-service, order-service)
+- order-service attaches it on its own outbound Feign calls to product-service (`getProduct`, `adjustStock`) — this traffic never passes through the gateway at all, so if order-service doesn't attach it, product-service's filter will reject order-service's own calls with 401
+
+This pattern repeats for every new inter-service call introduced in later versions — v3's recommendation-service calling order-service/product-service, and v4's order-service calling payment-service/notification-service, each need the same attach-on-outbound treatment, documented in their own architecture files.
+
+**Who checks it:** product-service, user-service, and order-service each get a new servlet filter — a plain `OncePerRequestFilter`, registered at the highest precedence (`@Order(1)` or equivalent), running before the dispatcher servlet. It reads `X-Internal-Secret`, compares it via string equality against a value injected from `application.yaml` (key: `internal.secret`), and if missing or mismatched, writes a 401 directly and does not call `filterChain.doFilter()` — the request never reaches any controller. This check applies to every endpoint in the service, including the JWT-whitelisted register/login/public-GET routes — a public endpoint being reachable without a *user* token doesn't mean it should be reachable without going through the gateway at all.
+
+api-gateway itself does not need this filter (nothing calls it as a downstream target), and eureka-server does not need it (no business endpoints, never called as an API target by anything).
+
+**Configuration:** the same literal string value goes into `application.yaml`'s `internal.secret` key in api-gateway, product-service, user-service, and order-service — generated once, pasted identically into each service's prompt, same discipline already used for the JWT HMAC secret. This is a separate value from the JWT secret; the two must not be the same string.
+
+**What this does and doesn't fix:** this closes direct-bypass access (hitting a service's port without going through the gateway at all) and, as a side effect, closes `X-User-Id` header-spoofing (an attacker can't inject that header if they can't get past the secret check to reach a controller in the first place). It does **not** address the separate userId-vs-JWT ownership gap named in Section 7 below — that's still about a legitimately-authenticated user acting on someone else's resource, a different problem this mechanism doesn't touch.
 
 ## 3. user-service changes
 
@@ -109,6 +136,7 @@ If any item fails the stock check in step 2 → checkout aborts, returns 409, ca
 - All outbound calls (`RestClient` base URL) now point at `http://api-gateway/...` (resolved via Eureka, same `lb://` mechanism) instead of individual service names.
 - Every authenticated call now attaches `Authorization: Bearer <token>` — the JWT obtained at login, stored in the frontend's own `HttpSession` (replacing v1's opaque session token in that same session slot — the storage location doesn't change, only what's stored there).
 - Checkout page should now surface the 409 "insufficient stock" case with a real user-facing message instead of a generic error page — this is the one UI change v2 actually requires.
+- frontend-service does not attach or check `X-Internal-Secret` — it only ever calls api-gateway (never a backend service directly), and the gateway is the trust boundary between the browser-facing tier and the internal service mesh. This filter is an internal-only mechanism.
 
 ---
 
@@ -120,6 +148,7 @@ If any item fails the stock check in step 2 → checkout aborts, returns 409, ca
 - No circuit breaker if product-service or user-service is down — gateway calls just fail through with a raw error (v5)
 - No compensation logic if the server crashes mid-way through decrementing multiple items in one checkout (v4 introduces the pattern via payment-failure restock; a mid-decrement crash specifically is a known gap even after v4, worth naming in your final "known limitations" writeup)
 - `userId` taken from the path variable (e.g. `/api/orders/checkout/{userId}`, `/api/orders/cart/{userId}/...`) is never cross-checked against the authenticated identity in the JWT (`sub` claim, forwarded as `X-User-Id`) — a logged-in user could act on another user's cart/order/history by changing the path id. This is a stated gap, not fixed until role/ownership enforcement is added; acceptable for a demo project with no real user data at stake, but worth naming explicitly rather than leaving unstated.
+- The internal-secret mechanism (Section 2.3) is a single static, unrotatable string shared across four services — if it leaks (checked into a public repo, logged, etc.), anything holding it can forge internal service traffic indefinitely, with no expiry and no per-caller granularity. This is a deliberately lightweight trade-off (equivalent to a shared API key) rather than mutual TLS or per-request signing, acceptable for a localhost demo project where the backend ports aren't reachable from outside your own machine anyway.
 
 ---
 
@@ -133,3 +162,6 @@ If any item fails the stock check in step 2 → checkout aborts, returns 409, ca
 - [ ] Checkout with sufficient stock: stock visibly decreases in product-service afterward
 - [ ] Checkout with insufficient stock: returns 409, cart remains `CART`, stock unchanged
 - [ ] Full frontend walkthrough (register → login → browse → cart → checkout) works end to end through the gateway with zero direct service calls bypassing it
+- [ ] Attempt to hit product-service, user-service, or order-service directly on its own port (bypassing api-gateway entirely) with no `X-Internal-Secret` header — confirm 401 from the service's own filter, request never reaches a controller
+- [ ] Confirm the same direct-hit attempt still fails even against `/register` or `/login` — proving the internal-secret check has no whitelist, unlike the JWT filter
+- [ ] Confirm order-service's checkout flow still succeeds end-to-end (through the gateway) — proving order-service correctly attaches the secret on its own outbound calls to product-service, not just relying on the gateway's already-attached header from the original inbound request
