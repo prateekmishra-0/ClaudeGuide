@@ -8,10 +8,10 @@
 |---|---|---|---|---|---|
 | eureka-server | v1 | 8761 | Built & Tested | service registry | — |
 | product-service | v1 | 8081 | Built & Tested | catalog CRUD, category CRUD, stock adjustment | `GET/POST /api/categories`, `GET/POST/PUT/DELETE /api/products`, `PATCH /api/products/{id}/stock` |
-| user-service | v1 | 8082 | Built & Tested | registration, login, in-memory session (replaced by JWT in v2) | `POST /api/users/register`, `POST /api/users/login`, `GET /api/users/me` |
+| user-service | v1 | 8082 | Built & Tested | registration, login, JWT-based auth (session mechanism replaced in v2) | `POST /api/users/register`, `POST /api/users/login`, `GET /api/users/me` |
 | order-service | v1 | 8083 | Built & Tested | cart + checkout (PLACED only, no payment yet) | `GET/POST/DELETE /api/orders/cart/{userId}...`, `POST /api/orders/checkout/{userId}`, `GET /api/orders/history/{userId}` |
 | frontend-service | v1 | 8080 | Built & Tested | Thymeleaf UI, no JS | pages only, no API of its own |
-| api-gateway | v2 | 8000 | Planned | single entry point, JWT validation, internal-secret attachment | routes `/api/products/**`, `/api/users/**`, `/api/orders/**` |
+| api-gateway | v2 | 8000 | Built & Tested | single entry point, JWT validation, internal-secret attachment | routes `/api/products/**`, `/api/users/**`, `/api/orders/**` |
 | recommendation-service | v3 | 8084 | Planned | rule-based → weighted product recommendations | `GET /api/recommendations/product/{id}`, `GET /api/recommendations/user/{id}` |
 | payment-service | v4 | 8085 | Planned | mock payment processing | `POST /api/payments`, `GET /api/payments/order/{orderId}` |
 | notification-service | v4 | 8086 | Planned | logs order outcome messages | `POST /api/notifications` |
