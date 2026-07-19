@@ -98,7 +98,7 @@ No longer looks up a token in a map — it now reads the JWT claims already vali
 
 ## 4. product-service changes
 
-### 4.1 `PATCH /api/products/{id}/stock` — now load-bearing
+### 4.1 `PUT /api/products/{id}/stock` — now load-bearing
 
 Existed as a stub in v1, now actually called. Behavior:
 - Request body: `{"delta": -2}` (negative to decrement, positive to restock)
@@ -120,7 +120,7 @@ POST /api/orders/checkout/{userId}
   1. Load the CART order and its items
   2. For EVERY item: call product-service GET /api/products/{id}, confirm stockQuantity >= requested quantity
      — check ALL items before mutating ANYTHING (see note below)
-  3. Only if all items pass: for EVERY item, call product-service PATCH /api/products/{id}/stock with delta = -quantity
+  3. Only if all items pass: for EVERY item, call product-service PUT /api/products/{id}/stock with delta = -quantity
   4. Flip order status CART → PLACED
   5. Return the placed order
 ```

@@ -46,7 +46,7 @@ NEW DTO (package: com.ecommerce.orderservice.dto):
 - StockAdjustRequest: delta (Integer)
 
 MODIFY: ProductServiceClient (package: com.ecommerce.orderservice.client)
-- Add: @PatchMapping("/api/products/{id}/stock") ProductResponse adjustStock(@PathVariable("id") Long id, @RequestBody StockAdjustRequest request)
+- Add: @PutMapping("/api/products/{id}/stock") ProductResponse adjustStock(@PathVariable("id") Long id, @RequestBody StockAdjustRequest request)
 - No ErrorDecoder; error translation happens at the call site in OrderService.
 
 NEW EXCEPTION (package: com.ecommerce.orderservice.exception):

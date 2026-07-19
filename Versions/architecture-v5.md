@@ -71,6 +71,21 @@ v2 introduced the JWT and the gateway's `X-User-Id` header, but never cross-chec
 
 Does not touch product-service, user-service, payment-service, notification-service, api-gateway, or frontend-service — the gateway already forwards `X-User-Id` correctly (v2), and frontend-service already only ever sends the logged-in user's own id in the normal customer flow (the exploit path is hand-crafted requests via Postman/curl, not normal UI use). user-service's own admin endpoints are a separate mechanism, covered in Section 3.
 
+**Extension — user-service's email-lookup endpoint (added in v4):** the same
+`HandlerInterceptor` mechanism applies to `GET /api/users/{id}/email`, registered in
+user-service alongside its existing `AdminOnlyInterceptor` (Section 3). One difference
+from order-service/recommendation-service's copies: this endpoint has a second, legitimate
+caller — order-service itself, calling directly via Eureka (bypassing the gateway entirely),
+which never carries an `X-User-Id` header at all. So the check here is:
+- `X-User-Id` present → must match `{id}` in the path, else 403 (blocks a customer from
+  reading another user's email through the gateway)
+- `X-User-Id` absent → allow through (this reliably means the request bypassed the
+  gateway and was already vetted by user-service's own internal-secret filter, which runs
+  before this interceptor in the filter/interceptor chain)
+  No admin bypass is needed here, unlike order-service's copy — there's no admin-panel use
+  case for looking up another user's email specifically (the admin panel already gets full
+  user details, including email, via Section 3's `GET /api/users/{id}`).
+
 ### 2.5 Role-based authorization — admin-only product writes
 
 Since v1, product-service's write endpoints (`POST /api/categories`, `POST /api/products`, `PUT /api/products/{id}`, `DELETE /api/products/{id}`, `PATCH /api/products/{id}/stock`) have been callable by any authenticated user — the `role` claim has existed on the JWT since v2 but nothing has ever read it. v5 closes this.
