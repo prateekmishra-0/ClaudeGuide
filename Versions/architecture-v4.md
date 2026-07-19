@@ -160,6 +160,7 @@ Same mechanism as `architecture-v2.md` Section 2.3 and `architecture-v3.md` Sect
 As with recommendation-service in v3, a missing or wrong secret on order-service's calls to any of these would surface as a rejected request at the receiving service's filter — worth checking directly if checkout behavior looks wrong (e.g. orders stuck, no email arriving) before assuming the business logic itself is broken.
 
 `Order.status` gains three new valid values: `PENDING_PAYMENT`, `PAID`, `PAYMENT_FAILED` (in addition to v1's `CART`, `PLACED` — note `PLACED` is effectively superseded by `PAID`/`PAYMENT_FAILED` going forward; keep `PLACED` in the codebase for backward compatibility with any v1/v2/v3 test data, but new checkouts never land there again).
+The Order entity's existing @PrePersist/@PreUpdate lifecycle hooks (v1) contain a hardcoded validation check restricting status to "CART"/"PLACED" only — this must be widened to also accept "PENDING_PAYMENT", "PAID", and "PAYMENT_FAILED", or every v4 checkout will fail with a 500 the instant the order is saved with a new status value. This is a required entity-level change in this version, not an unrelated v1 detail — do not treat Order as unchanged when building this version's order-service prompt.
 
 ```
 POST /api/orders/checkout/{userId}
@@ -201,7 +202,7 @@ Since this project hasn't started v4 yet, generate notification-service's Spring
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/api/notifications` | body: `{"orderId": ..., "email": "...", "message": "..."}` — sends a real email to `email` with `message` as the body, and logs the same line to console/log file as before. |
+POST /api/notifications — body: {orderId, email, message} — sends a real email via Gmail SMTP (spring-boot-starter-mail, JavaMailSender), and separately logs the outcome (INFO on success or attempt, ERROR on failure) so a local record always exists even if Gmail is unreachable. The DTO also includes an email field, not present in the original baseline spec, since a real send needs a destination address. This project moved past the "optional polish" framing originally described here — real email is the actual built behavior, not console-log-only.
 
 Note the payload gained `email` compared to the original v4 design (which was just `{orderId, message}`) — this is the one contract change needed to make real sending possible, supplied by order-service's new Section 6.1's step 3.5.
 

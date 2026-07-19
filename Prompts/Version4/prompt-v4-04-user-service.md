@@ -1,7 +1,8 @@
 This is NOT a new project — you're continuing in the existing user-service project from v1/v2. Do not run Spring Initializr again. No dependency changes are needed for this version — do not modify pom.xml at all, do not suggest any addition.
 
 Existing files in this project (do not regenerate these from scratch — you are extending/modifying them):
-- User entity — unchanged, do not touch
+- OrderItem entity — unchanged, do not touch.
+- Order entity — MODIFY, not unchanged: this entity's existing @PrePersist and @PreUpdate lifecycle hooks (built in v1) contain a hardcoded validation check that only permits status values "CART" and "PLACED" — anything else throws IllegalArgumentException. This version's checkout flow now sets "PENDING_PAYMENT", "PAID", and "PAYMENT_FAILED", none of which that check currently allows, which would cause every checkout to fail with a 500 the moment the order is saved. Update both hooks' validation to also accept these three new literal values, in addition to the existing "CART" and "PLACED" — do not remove or weaken the check itself, only widen the allowed set. No other change to the Order entity (fields, annotations, column definitions) — this is confined to the validation logic inside the two lifecycle methods.
 - UserRepository — EXTENDED below (one new query method), everything else unchanged
 - RegisterRequest, LoginRequest, LoginResponse, UserResponse DTOs — unchanged, do not touch
 - SecurityConfig — unchanged, do not touch

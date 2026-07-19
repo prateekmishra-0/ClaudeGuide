@@ -25,8 +25,8 @@ CONFIGURATION FILE:
   mail:
   host: smtp.gmail.com
   port: 587
-  username: YOUR_GMAIL_ADDRESS_HERE
-  password: YOUR_16_CHARACTER_APP_PASSWORD_HERE
+  username: mishrap1@rknec.edu
+  password: yaqlhndcrhhotlyd
   properties:
   mail:
   smtp:
@@ -52,7 +52,7 @@ SERVICE LAYER (package: com.ecommerce.notificationservice.service):
 - Inject JavaMailSender (auto-configured by Spring Boot once spring.mail.* properties are set — no manual bean needed)
 
 Method: void sendNotification(NotificationRequest request)
-1. Build a SimpleMailMessage: to = request.getEmail(), subject = "Order Update — Order #" + request.getOrderId(), text = request.getMessage()
+1. Build a SimpleMailMessage: from = the configured spring.mail.username value (read via @Value, do not hardcode the email address as a string literal in this class — inject it from application.yaml the same way host/port/credentials are already configured), to = request.getEmail(), subject = "Order Update — Order #" + request.getOrderId(), text = request.getMessage(). Gmail's SMTP server silently rejects messages with no From address set — this field is not optional despite SimpleMailMessage allowing it to be left null.
 2. Call mailSender.send(...), wrapped in try/catch catching MailException (or a broad Exception if that's simpler) — if sending fails, log the failure clearly (log.error with the exception) but do NOT rethrow or let it propagate; a failed email must never turn into a 500 for the caller
 3. Regardless of whether the send succeeded or failed, also log the notification at INFO level: the orderId, email, and message — this preserves the original v4 "logs order outcome messages" behavior even now that real email is being sent, so you always have a local record even if Gmail is unreachable
 
