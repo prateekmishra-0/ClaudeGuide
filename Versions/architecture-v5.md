@@ -14,8 +14,9 @@
 | api-gateway | generic fallback route for any downstream failure (Section 2.3) |
 | order-service, recommendation-service | Ownership enforcement: path `{userId}` cross-checked against JWT-derived `X-User-Id` header, with an admin bypass on order-service (Section 2.4) |
 | product-service | Role-based authorization: write endpoints restricted to ADMIN role (Section 2.5) |
+| order-service | Admin-only restriction on `GET /api/orders/containing-product/{productId}` when reached via the gateway (Section 2.6) |
 | user-service | Admin-only user listing, lookup, and deletion endpoints (Section 3) |
-| frontend-service | Stock count hidden from customers, shown to admins (Section 4) |
+| frontend-service | Full admin panel — product/category/stock management, user list and deletion, per-product buyer view (Section 5, 5.4a) |
 | frontend-service | Full admin panel — product/category/stock management, user list and deletion (Section 5) |
 | all backend services | standardized error response shape + `GlobalExceptionHandler` (Section 6) |
 | all backend services | `springdoc-openapi` / Swagger UI (Section 7) |
@@ -101,6 +102,23 @@ Since v1, product-service's write endpoints (`POST /api/categories`, `POST /api/
 
 **What this does not cover:** no role check is added to order-service, recommendation-service, payment-service, or notification-service — none of their endpoints are role-differentiated in this project's design (e.g. any authenticated CUSTOMER can check out their own cart, view their own history). Role enforcement is scoped to product-service's writes (this section) and user-service's admin endpoints (Section 3) only — those are the only two places in the whole system where an admin/customer distinction is meaningful per the project's design.
 
+### 2.6 Admin-only restriction on `containing-product`
+
+**The problem this closes:** `GET /api/orders/containing-product/{productId}` has existed since v3, but it was only ever called one way — service-to-service, recommendation-service → order-service, direct via Eureka, authenticated by the internal-secret filter. As of v5, the gateway's existing `order-route` (`Path=/api/orders/**`, unchanged since v2) already matches this path, and `JwtValidationFilter`'s whitelist is an allow-list, not a deny-list — so any authenticated CUSTOMER token, not just ADMIN, could already call it through the gateway and see every userId that bought a given product. This section closes that gap before Section 5.4a relies on the endpoint for the admin panel.
+
+**The rule:** when reached with `X-User-Id` present (i.e. via the gateway), `X-User-Role` must equal exactly `"ADMIN"`. When reached with no `X-User-Id` at all (recommendation-service's existing direct-via-Eureka call, internal-secret-authenticated, unchanged since v3), allow through unconditionally — same reasoning Section 2.4 already used for user-service's `/email` endpoint.
+
+| Aspect | Behavior |
+|---|---|
+| Trigger | `X-User-Id` present **AND** `X-User-Role` missing or not exactly `"ADMIN"` |
+| Bypass | `X-User-Id` absent entirely → allow through unconditionally (recommendation-service's v3 internal call) |
+| Response | 403 Forbidden, same shape as every other `ForbiddenException` in this project |
+| Not in scope | Cart/checkout/history endpoints are governed by Section 2.4 only, unchanged by this section |
+
+**Mechanism:** reuse order-service's existing `ForbiddenException` and `GlobalExceptionHandler` mapping from Section 2.4 — do not create a second exception class. Add one more `if` branch inside the **same** `HandlerInterceptor` Section 2.4 already registers: when the path matches `/api/orders/containing-product/**`, apply the rule above instead of the `{userId}`-vs-`X-User-Id` comparison (this path has no `{userId}` variable to compare against). Register this path pattern alongside the five Section 2.4 already lists, in the same `WebMvcConfigurer` call — one interceptor per service, not a second one.
+
+---
+
 ---
 
 ## 3. Admin endpoints — user-service
@@ -163,7 +181,7 @@ Package `com.ecommerce.frontendservice.controller`, base path `/admin`.
 
 | Route | Calls | Purpose |
 |---|---|---|
-| `GET /admin/products` | `GET /api/products` (existing paginated endpoint) | list all products, showing real stock counts (Section 4), with edit/delete/adjust-stock actions per row |
+| `GET /admin/products` | `GET /api/products` (existing paginated endpoint) | list all products, showing real stock counts (Section 4), with edit/delete/adjust-stock actions per row, plus a "View buyers" link per row (Section 5.4a) |
 | `GET /admin/products/new` | `GET /api/categories` | blank product creation form, category dropdown populated from the category list |
 | `POST /admin/products/new` | `POST /api/products` | create; on a 400 from product-service (validation failure), redisplay the form with the error rather than a generic error page |
 | `GET /admin/products/{id}/edit` | `GET /api/products/{id}` | prefilled edit form |
@@ -172,6 +190,26 @@ Package `com.ecommerce.frontendservice.controller`, base path `/admin`.
 | `POST /admin/products/{id}/stock` | `PUT /api/products/{id}/stock` | small inline form, single `delta` field, redirect to `/admin/products` |
 | `GET /admin/categories/new` | — | blank category creation form |
 | `POST /admin/categories/new` | `POST /api/categories` | create; on a 409 (duplicate name), redisplay the form with the error |
+
+### 5.4a Admin: view buyers of a product
+
+Read-only. No new Feign client interface — extends two that already exist.
+
+Extend `OrderServiceClient` (frontend-service, `.client`) with: `@GetMapping("/api/orders/containing-product/{productId}") List<OrderResponse> getOrdersContainingProduct(@PathVariable("productId") Long productId)` — declarative, no body. `OrderResponse` is the existing DTO, already carries `userId` per order — no new DTO. Rides on the existing `FeignAuthInterceptor` (v2) automatically, which is what makes Section 2.6's role check upstream see the admin's role.
+
+New route on `AdminProductController`:
+
+| Route | Calls | Purpose |
+|---|---|---|
+| `GET /admin/products/{id}/buyers` | `GET /api/products/{id}` (existing) + `orderServiceClient.getOrdersContainingProduct(id)` (new) | shows every PLACED order containing this product |
+
+Logic: fetch the product (404 via existing `ProductNotFoundException` if missing) → fetch orders containing it → extract distinct `userId`s (dedup) plus total order count (not deduped — show both numbers) → for each distinct `userId`, call `userServiceClient.getUserById(userId)` (already added in Section 5.3) to resolve name/email, wrapped in try/catch, skipping a row on individual failure rather than failing the whole page (guards against Section 3's known user-deletion gap) → Model gets `product`, `totalOrders`, `buyers` (reusing `UserResponse`, no new DTO) → view name `admin-product-buyers`.
+
+New template `admin-product-buyers.html`: header fragment, product name + "Purchased N times by M distinct users", a plain table of buyer name/email each linking to the existing `/admin/users/{id}` page, no JavaScript.
+
+Not in scope for this addition: no date filtering, no CSV export, no cross-product "top buyers" aggregate view, no change to `containing-product`'s response shape.
+
+---
 
 ### 5.5 New controller: AdminUserController
 
@@ -185,7 +223,7 @@ Package `com.ecommerce.frontendservice.controller`, base path `/admin`.
 
 ### 5.6 New templates
 
-`admin-products.html`, `admin-product-form.html` (shared by new/edit), `admin-category-form.html`, `admin-users.html`, `admin-user-detail.html`. Same plain-HTML-forms, no-JavaScript constraint as every other template in this project — no exceptions for the admin panel. Header fragment (existing, from v1 Part B) gains one more conditional link — "Admin Panel" → `/admin/products`, shown only `th:if="${loggedInUserRole == 'ADMIN'}"`, alongside the existing logged-in-user links.
+`admin-products.html`, `admin-product-form.html` (shared by new/edit), `admin-category-form.html`, `admin-users.html`, `admin-user-detail.html`, `admin-product-buyers.html` (Section 5.4a). Same plain-HTML-forms, no-JavaScript constraint as every other template in this project — no exceptions for the admin panel. Header fragment (existing, from v1 Part B) gains one more conditional link — "Admin Panel" → `/admin/products`, shown only `th:if="${loggedInUserRole == 'ADMIN'}"`, alongside the existing logged-in-user links.
 
 ### 5.7 What NOT to build in this version
 
@@ -280,6 +318,10 @@ Items worth flagging for that writeup specifically, since this version resolves 
 - [ ] A CUSTOMER-role user navigating directly to any `/admin/**` URL in the browser is redirected home, not shown admin content or an error page
 - [ ] Full admin walkthrough: log in as ADMIN → create a category → create a product → adjust its stock → edit it → view it as a logged-out/customer visitor and confirm the changes reflect (and stock still shows only In/Out of Stock) → delete it → confirm it's gone from customer-facing pages
 - [ ] Full user-management walkthrough: as ADMIN, view the user list → click into one user → see their real order history on the detail page → delete a disposable test user → confirm they're gone from the list and can no longer log in
+- [ ] Log in as a CUSTOMER-role user, obtain their JWT, attempt `GET /api/orders/containing-product/{anyProductId}` directly through the gateway — confirm 403, not 200 (Section 2.6)
+- [ ] Confirm recommendation-service's existing internal call to the same endpoint (direct via Eureka, no `X-User-Id`) still succeeds unchanged — re-run one of v3's original recommendation checklist items and confirm it still passes after this change
+- [ ] Full walkthrough: as ADMIN, open `/admin/products`, click "View buyers" on a product with at least two known purchasers (including one purchased twice by the same user) — confirm the correct distinct-buyer count, the correct total-orders count, and that clicking a listed buyer navigates to their existing Section 5.5 user-detail page
+- [ ] With a test user deleted via the admin panel (Section 3) after having purchased the product being viewed, confirm the buyers page still loads (that row is silently skipped, not a 500)
 - [ ] All tests in Section 8 pass
 - [ ] The known-limitations writeup exists in `architecture-master-methodology.md` Section 11 and covers every item listed there, including the v5-specific notes in Section 9 above
 - [ ] Full end-to-end walkthrough (register → browse → view products with stock hidden → cart → checkout with a real payment success → checkout with a forced payment failure → recommendations reflect purchase/view history → admin-only product write correctly blocked for a customer, correctly allowed for an admin → admin panel product/category/stock management works → admin panel user list/detail/delete works) works with zero unhandled errors anywhere in the chain
