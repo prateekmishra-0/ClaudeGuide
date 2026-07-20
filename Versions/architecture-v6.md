@@ -1,177 +1,255 @@
-# ARCHITECTURE — v6 (OTP Verification)
+# ARCHITECTURE — v6 (OTP Verification: Registration & Checkout)
 
-> Carried over from v5: eureka-server, api-gateway, product-service, order-service, recommendation-service,
-> payment-service, notification-service, frontend-service all unchanged except where this file says otherwise.
-> See `services-index.md` for the full summary.
->
-> New in v6: a single OTP mechanism (generate 6-digit numeric code → email it → store it with an expiry and
-> attempt counter → verify → resend-after-30s) applied in two places: user registration and checkout.
-> No new service. Two services gain new entities: user-service and order-service.
->
-> Verified against the actual `architecture-v2.md`, `architecture-v4.md`, `architecture-v5.md` (patched
-> 2026-07-20; the first draft of this file was written from a secondhand summary and got two things wrong —
-> see the inline notes in Sections 4.1 and 4.3 for what changed and why). Card details are never sent to
-> order-service (v4 Section 8.2/4.4) — the OTP gate sits in front of *all* of v4's checkout logic, not after
-> a card-validation step, because order-service never performs one.
+> Carried over from v5: all 8 services exist and are unchanged in shape — see `services-index.md` for the summary. No new services in v6. This version adds a one-time-password gate in front of two existing flows (registration in user-service, checkout in order-service), reusing notification-service's existing email capability rather than adding a new channel. It also upgrades the checkout notification email from v4's one-line sentence to a full bill summary.
+> This version makes two deliberate, named **breaking changes** to existing endpoint contracts: `POST /api/users/register` no longer creates a user immediately, and `POST /api/orders/checkout/{userId}` (the single-step version) is retired outright, replaced by a three-step flow. Both are called out explicitly in their own sections below — neither is a silent rename.
+> Seller role (product ownership, seller panel) is explicitly **out of scope for this file** — see `architecture-v7.md`.
 
 ---
 
-## 1. Services in this version
+## 1. What's added (by service)
 
-| Service | Port | Change from v5 |
-|---|---|---|
-| eureka-server | 8761 | unchanged |
-| api-gateway | 8000 | whitelist gains two new public paths (Section 5) |
-| product-service | 8081 | unchanged |
-| user-service | 8082 | **registration flow changed** — new entity, new endpoints (Section 3) |
-| order-service | 8083 | **checkout flow changed** — new entity, new endpoints (Section 4) |
-| recommendation-service | 8084 | unchanged |
-| payment-service | 8085 | unchanged |
-| notification-service | 8086 | unchanged — no code changes, just a new caller (Section 3) and richer message content (Section 4.4) |
-| frontend-service | 8080 | two new pages, two controllers touched (Section 6) |
-
-Global defaults for both OTP flows (registration and checkout) — same numbers, not configurable per-flow in v6:
-- OTP: 6-digit numeric, generated via a simple random int in `[100000, 999999]`, stored as a `String` (preserves leading behavior, no leading-zero ambiguity since range starts at 100000).
-- Expiry: 5 minutes from generation. An expired OTP cannot be verified — the user must resend.
-- Max wrong attempts: 5. On the 5th wrong verify, the row is locked (no more verify attempts accepted) until a resend generates a fresh OTP and resets the counter.
-- Resend cooldown: 30 seconds from the last OTP's `generatedAt`. Enforced server-side on every resend call — a disabled frontend button is a UX nicety, not the actual control.
+| Service | Addition |
+|---|---|
+| user-service | Registration becomes a two-step, OTP-gated flow: new `PendingRegistration` entity, three new endpoints, new outbound call to notification-service (Section 3) |
+| order-service | Checkout becomes a three-step, OTP-gated flow: new `CheckoutOtp` entity, three new endpoints replacing the old single-step one, richer bill-summary email content (Section 4, Section 6) |
+| notification-service | New endpoint dedicated to OTP emails, separate from the existing order-outcome endpoint (Section 5) |
+| api-gateway | Two new whitelist entries (registration's verify/resend), no new routes needed (Section 7) |
+| frontend-service | New OTP-entry pages for both registration and checkout, Feign client method changes to match the new backend contracts (Section 8) |
 
 ---
 
-## 2. Why two entities, not one shared generic OTP table
+## 2. Shared OTP pattern
 
-Registration-OTP and checkout-OTP hold different contextual payloads (pending *user* details vs. a pending *order's* card/OTP state) and belong to different services with different databases entirely — there is no shared table to begin with. Each gets its own small entity, following the same "keep it a plain, service-local concept" instinct v1 used for `Order.status` (a plain string, not a shared enum type). Same mechanism, two independent implementations.
+Both services implement the same rules independently — **not shared code**, since user-service and order-service are separate projects with separate databases (same convention already established for `ForbiddenException` in v5, implemented once per service rather than shared).
+
+| Rule | Value |
+|---|---|
+| OTP format | 6 digits, numeric, zero-padded (e.g. `007421`), generated via `java.security.SecureRandom` — **not** `Math.random()`. This doesn't contradict payment-service's v4 "no `Math.random()`" rule, which was about deterministic *testability* of a business outcome; OTP generation is a security-sensitive value that must be genuinely unpredictable, a different concern entirely. |
+| Expiry | 5 minutes from `otpGeneratedAt` |
+| Wrong-attempt cap | 5 incorrect verify attempts. On the 5th wrong attempt, the pending record is deleted and the caller must start over (re-register / re-initiate checkout), not just resend. |
+| Resend cooldown | 30 seconds since `otpGeneratedAt`, enforced **server-side** on every resend call — this is the actual security boundary, not a UI convenience. A resend does **not** reset the wrong-attempt counter — only a full restart does. |
+| Storage | Both new entities store the OTP as `String`, length 6, never as an `Integer` (preserves leading zeros) |
 
 ---
 
 ## 3. user-service — registration OTP
 
-### 3.1 New entity: PendingRegistration
+### 3.1 New entity: `PendingRegistration` (package `com.ecommerce.userservice.entity`)
 
 | Field | Type | Constraints |
 |---|---|---|
 | id | Long | PK, auto-generated (IDENTITY) |
-| name | String | `@NotBlank`, max 60 — copied from the original register request |
-| email | String | `@NotBlank`, `@Email` — **not** `@Column(unique = true)` here; uniqueness against real accounts is enforced against `User`, not this table (Section 3.3) |
-| passwordHash | String | `@NotBlank` — hashed once, at initial submission, same `BCryptPasswordEncoder` as v1; never re-hashed on verify |
-| otp | String | `@NotBlank`, length 6 |
-| otpGeneratedAt | LocalDateTime | set on creation and on every resend |
-| attempts | Integer | `@NotNull`, default 0 — count of wrong verify attempts since the current OTP was generated |
-| createdAt | LocalDateTime | `@PrePersist`, set once, never updated |
+| name | String | `@NotBlank`, max 60 |
+| email | String | `@NotBlank`, `@Email`, `@Column(unique = true)` — one pending registration per email; a repeat call to `/register` for the same email overwrites (delete + recreate) the existing pending row rather than creating a second one |
+| passwordHash | String | `@NotBlank` — hashed via `BCryptPasswordEncoder` at initiate time, exactly as v1 did at final creation time; never store plaintext even transiently |
+| otp | String | `@NotBlank`, `@Column(length = 6)` |
+| otpGeneratedAt | LocalDateTime | set at initiate and again at every resend, not client-settable |
+| attempts | Integer | defaults 0, incremented on each wrong verify attempt |
 
-7 fields. If a second registration attempt comes in for the same email while a `PendingRegistration` already exists, the existing row is deleted and replaced with a fresh one (fresh OTP, fresh `createdAt`) rather than layering a uniqueness check on top of it — simplest correct behavior for "I didn't get the email, let me try again from the start." No `@PrePersist`-set `role`/other `User`-shaped fields here; those are only assigned when the real `User` row is finally created in 3.2.
+New repository: `PendingRegistrationRepository extends JpaRepository<PendingRegistration, Long>`, one custom method `Optional<PendingRegistration> findByEmail(String email)`.
 
-### 3.2 Endpoint changes
+### 3.2 Endpoints
 
 | Method | Path | Purpose | Notes |
 |---|---|---|---|
-| POST | `/api/users/register` | **changed** — start registration | body unchanged (name, email, password). No longer creates a `User` row. Checks `existsByEmail` against `User` (existing v1 check, unchanged — still 409 `EmailAlreadyExistsException` if a real account already has this email); if clear, deletes any existing `PendingRegistration` for this email, creates a fresh one with a new OTP, calls notification-service (Section 3.4), returns 200 with `{"email": "...", "message": "OTP sent to your email"}` — **no token, no user id**, since no account exists yet |
-| POST | `/api/users/register/verify-otp` | **new** — complete registration | body: `{"email": "...", "otp": "..."}`. Looks up `PendingRegistration` by email (404 `PendingRegistrationNotFoundException` if none). If `attempts >= 5`: 423 `TooManyOtpAttemptsException` ("request a new code"). If `now > otpGeneratedAt + 5min`: 410 `OtpExpiredException`. If `otp` doesn't match: increment `attempts`, save, 400 `InvalidOtpException` with remaining-attempts count in the message. If it matches: create the real `User` row (name, email, passwordHash carried over verbatim, `role` defaulted exactly as v1's `@PrePersist` already does), delete the `PendingRegistration` row, return 201 with the same shape v1's old register success returned |
-| POST | `/api/users/register/resend-otp` | **new** — request a fresh code | body: `{"email": "..."}`. Looks up `PendingRegistration` by email (404 if none — nothing pending to resend for). If `now < otpGeneratedAt + 30s`: 429 `OtpResendTooSoonException`. Otherwise: generate a new OTP, reset `attempts` to 0, update `otpGeneratedAt`, re-email it, return 200 with the same shape as the initial register response |
+| POST | `/api/users/register` | **initiate** registration | body: `RegisterRequest` (name, email, password) — same shape as v1, unchanged. **Behavior change from v1–v5:** no longer creates the `User` row. Validates the email isn't already a real registered user (existing `existsByEmail` check, still 409 `EmailAlreadyExistsException` if so — unchanged), hashes the password, generates an OTP, upserts `PendingRegistration` (overwriting any existing pending row for that email), calls notification-service (Section 3.5), returns **200** with `OtpSentResponse{message, email}` — not the old 201-with-`UserResponse`. |
+| POST | `/api/users/register/verify` | finalize registration | body: `OtpVerifyRequest{email, otp}`. Look up `PendingRegistration` by email → 404 `PendingRegistrationNotFoundException` if none. If `now - otpGeneratedAt > 5 min` → 400 `OtpExpiredException`. If `otp` doesn't match → increment `attempts`; if now ≥ 5 → delete the pending row, 429 `TooManyAttemptsException` ("too many incorrect attempts, please register again"); else 400 `InvalidOtpException`. If it matches → create the real `User` row (role defaults `"CUSTOMER"` via the existing `@PrePersist`, unchanged since v1), delete the `PendingRegistration` row, return **201** `UserResponse` — same shape v1's original `/register` used to return. |
+| POST | `/api/users/register/resend-otp` | resend a registration OTP | body: `OtpResendRequest{email}`. Look up `PendingRegistration` by email → 404 if none. If < 30s since `otpGeneratedAt` → 429 `ResendTooSoonException`. Else generate a new OTP, update `otpGeneratedAt` (attempts **not** reset), call notification-service again, return 200 `OtpSentResponse`. |
 
-### 3.3 Email uniqueness — unchanged, still two-layer
+### 3.3 New exceptions (package `com.ecommerce.userservice.exception`)
 
-The `existsByEmail` pre-check plus `DataIntegrityViolationException` backstop in `GlobalExceptionHandler` (established in v1, restated in `promptrule.md`) still applies to `User.email` exactly as before — it runs at the start of `/register`, before a `PendingRegistration` is ever created. Nothing about that pattern changes in v6.
+`PendingRegistrationNotFoundException` → 404, `InvalidOtpException` → 400, `OtpExpiredException` → 400, `TooManyAttemptsException` → 429, `ResendTooSoonException` → 429. Each wired individually into the existing `GlobalExceptionHandler`, same pattern as every prior custom exception in this project — no shared parent exception class.
 
-### 3.4 New outbound call: user-service → notification-service
+### 3.4 New DTOs (package `com.ecommerce.userservice.dto`)
 
-user-service did not call notification-service before v6 (only order-service did, since v4). This is a new Feign client, `NotificationServiceClient`, in `com.ecommerce.userservice.client`, resolved through Eureka the same way order-service's existing clients are, carrying `X-Internal-Secret` on every call (same `FeignInternalSecretInterceptor`-shaped pattern order-service already established in v2 — reuse that pattern here, don't invent a new one per `promptrule.md` Section 2). Reuses notification-service's existing `POST /api/notifications` endpoint unchanged. `NotificationRequest` is `{orderId, email, message}` (confirmed from v4) — `orderId` doesn't apply to a registration email, so user-service's local copy of the request DTO sends `orderId: null`. Nothing in v4's file marks `orderId` `@NotNull` on notification-service's side, so this should pass through cleanly, but flag it explicitly in the user-service prompt so a fresh chat doesn't invent a fake orderId or add unwanted validation on notification-service's side to "fix" a null it was never designed to reject. The OTP code itself is just the `message` text; notification-service's own code needs no changes, same as it doesn't for the checkout path.
+- `OtpVerifyRequest`: email (`@Email`, `@NotBlank`), otp (`@NotBlank`, `@Pattern(regexp = "^\\d{6}$")`)
+- `OtpResendRequest`: email (`@Email`, `@NotBlank`)
+- `OtpSentResponse`: message (String), email (String)
+
+### 3.5 New outbound call: user-service → notification-service
+
+This is **new for user-service** — it has never called another service before v6 (contrast: order-service has done this since v1). Required additions:
+- `@EnableFeignClients` added to `UserServiceApplication` (not previously needed)
+- New `NotificationServiceClient` interface (package `com.ecommerce.userservice.client`), `@FeignClient(name = "notification-service")`, one method targeting the new `POST /api/notifications/otp` (Section 5.2)
+- New `FeignInternalSecretInterceptor` (package `com.ecommerce.userservice.config`) — same mechanism order-service's copy has had since v4, attaching `X-Internal-Secret` to every outbound call this client makes, resolved directly via Eureka, **not** through the gateway — same "internal calls bypass the gateway" convention every inter-service call in this project has followed since v1
+
+### 3.6 What this does not change
+
+`POST /api/users/login` and `GET /api/users/me` are completely unchanged. `EmailAlreadyExistsException`'s 409 behavior at initiate time is unchanged from v1. The `User` entity itself gains no new fields.
 
 ---
 
 ## 4. order-service — checkout OTP
 
-### 4.1 New entity: CheckoutOtp
+### 4.1 New entity: `CheckoutOtp` (package `com.ecommerce.orderservice.entity`)
 
 | Field | Type | Constraints |
 |---|---|---|
 | id | Long | PK, auto-generated (IDENTITY) |
-| order | Order | `@OneToOne`, `@JoinColumn(name = "order_id")`, not nullable — the specific order this OTP gates |
-| otp | String | `@NotBlank`, length 6 |
-| otpGeneratedAt | LocalDateTime | set on creation and on every resend |
-| attempts | Integer | `@NotNull`, default 0 |
-| createdAt | LocalDateTime | `@PrePersist` |
+| userId | Long | `@NotNull`, `@Column(unique = true)` — one pending checkout-OTP per user at a time |
+| otp | String | `@NotBlank`, `@Column(length = 6)` |
+| otpGeneratedAt | LocalDateTime | set at initiate and each resend |
+| attempts | Integer | defaults 0 |
 
-5 fields. **No card-data field of any kind** — v4 Section 8.2/4.4 states explicitly that card number/CVV/expiry are validated in the frontend only and are never transmitted to order-service, "not stored in the session, not logged." `CheckoutOtp` must not become the place that boundary quietly gets broken; there is nothing to snapshot here because order-service never receives card data in the first place (see 4.3 — the checkout-start call has no body). Row is deleted once the order moves past the OTP gate (success or the order is otherwise abandoned) — it's a transient holding row, not a permanent audit record.
+New repository: `CheckoutOtpRepository extends JpaRepository<CheckoutOtp, Long>`, one custom method `Optional<CheckoutOtp> findByUserId(Long userId)`.
 
-### 4.2 New Order.status value: OTP_PENDING
-
-Per `promptrule.md`'s rule on preserving existing enum-like values, this is additive only. Existing values — `CART`, `PLACED` (v1), `PENDING_PAYMENT`, `PAID`, `PAYMENT_FAILED` (v4), `PAYMENT_PENDING_RETRY` (v5's circuit-breaker fallback) — are untouched. Confirmed against the actual v4/v5 files: `OTP_PENDING` sits **before v4's checkout logic runs at all**, not after any card step — v4's checkout endpoint takes no body, since card fields are frontend-only and never reach order-service (v4 Section 8.2/4.4). So the OTP gate can't be "after card validation" inside order-service; there's no such step here to gate.
-
-```
-CART → [checkout requested, non-empty-cart check passes (existing v1 check, unchanged)]
-     → OTP_PENDING
-     → [OTP verified]
-     → (v4's existing flow, entirely unchanged from here: validate+decrement stock → PENDING_PAYMENT
-        → call payment-service → 3.5 resolve email via user-service → 4a PAID + full-bill notification,
-        or 4b PAYMENT_FAILED + restock + notification, or v5's circuit-breaker fallback → PAYMENT_PENDING_RETRY)
-```
-
-**Required entity-level change, easy to miss (v4 hit this same issue when it added its own new statuses):** `Order`'s `@PrePersist`/`@PreUpdate` lifecycle hooks hardcode which status strings are legal. That hardcoded list must be widened to also accept `OTP_PENDING`, or every v6 checkout will 500 the instant the order is saved with the new status — exactly the failure mode v4 called out explicitly for its own three new statuses. State this in the order-service prompt for this version; don't treat `Order` as merely "gains a new value" without touching the validation itself.
-
-### 4.3 Endpoint changes
+### 4.2 Endpoints — replacing the old single-step checkout
 
 | Method | Path | Purpose | Notes |
 |---|---|---|---|
-| POST | `/api/orders/checkout/{userId}` | **changed** — start checkout | **no body** — unchanged from every prior version; card fields stay entirely frontend-side and are never part of this request, per v4's explicit boundary. Loads the CART order, runs v1's existing empty-cart check (400 if empty, unchanged), and if it passes: order status → `OTP_PENDING`, `CheckoutOtp` row created (OTP only, no card data), notification-service called (Section 4.4), returns 200 `{"orderId": ..., "message": "OTP sent to your email"}`. Does **none** of v4's stock/payment logic yet — all of it, from stock validation onward, is deferred to verify-otp |
-| POST | `/api/orders/checkout/{userId}/verify-otp` | **new** — complete checkout | body: `{"otp": "..."}`. Finds the user's `OTP_PENDING` order and its `CheckoutOtp` row (404 if none). Same attempts/expiry rules as 3.2's registration flow (5 max attempts → 423, 5-min expiry → 410, mismatch → 400 with attempts incremented). On match: deletes `CheckoutOtp`, then runs v4's **entire** checkout sequence from its actual first step, unchanged — validate-then-decrement stock, status → `PENDING_PAYMENT`, call payment-service, resolve email via user-service (v4 step 3.5), then 4a (`PAID` + notification) or 4b (`PAYMENT_FAILED` + restock + notification), or v5's circuit-breaker fallback (`PAYMENT_PENDING_RETRY`) if payment-service times out. The success-path notification's content is the richer itemized bill from Section 4.4; failure/retry notifications keep v4's existing short-text messages, unchanged |
-| POST | `/api/orders/checkout/{userId}/resend-otp` | **new** — request a fresh code | same 30-second-cooldown pattern as 3.2's registration resend, scoped to the user's `OTP_PENDING` order |
+| POST | `/api/orders/checkout/{userId}/initiate` | begin checkout | **Replaces** v1–v5's `POST /api/orders/checkout/{userId}`, retired in v6 (Section 4.6). Validates the cart is non-empty (400 `EmptyCartException`, unchanged rule from v1) but does **not** touch stock or call payment-service yet. Resolves the user's email via the existing `UserServiceClient` (v4) `/api/users/{id}/email` call. Generates an OTP, upserts `CheckoutOtp` (overwriting any existing pending row for this `userId`), calls notification-service (Section 5.2), returns 200 `OtpSentResponse`. |
+| POST | `/api/orders/checkout/{userId}/verify-otp` | finalize checkout | body: `CheckoutOtpVerifyRequest{otp}`. Look up `CheckoutOtp` by `userId` → 404 `CheckoutOtpNotFoundException` if none (client should call `/initiate` first). Expiry/attempts/wrong-otp handling identical in shape to user-service's verify endpoint (Section 3.2), using order-service's own separately-implemented exception classes (Section 4.3). On a correct, non-expired OTP: delete the `CheckoutOtp` row, then run the **existing, completely unchanged** v2/v4/v5 checkout logic — stock decrement, the v5 circuit-breaker-wrapped call to payment-service, `PAID`/`PAYMENT_FAILED`/`PAYMENT_PENDING_RETRY` branching, and the final notification call (now using the bill-summary content from Section 6). This endpoint is a new front door onto logic that already existed — not a rewrite of it. Returns the same `OrderResponse` shape checkout has always returned. |
+| POST | `/api/orders/checkout/{userId}/resend-otp` | resend a checkout OTP | body: none (`userId` from path). Same 30-second-cooldown rule as user-service's resend endpoint; `attempts` not reset. Returns 200 `OtpSentResponse`. |
 
-**Ownership — needs an explicit registration change, not just "already covered":** v5's Section 2.4 `HandlerInterceptor` is registered against a fixed list of literal path patterns, one of which is `POST /api/orders/checkout/{userId}`. The two new sub-paths (`.../verify-otp`, `.../resend-otp`) are *not* automatically included just because they share a prefix — they must be added explicitly to the same `WebMvcConfigurer` registration alongside the existing five, or they'll run with no ownership check at all. State this directly in the order-service prompt for this version.
+### 4.3 New exceptions (package `com.ecommerce.orderservice.exception`)
 
-### 4.4 Order-confirmation email — richer content, same call
+`CheckoutOtpNotFoundException` → 404, `InvalidOtpException` → 400, `OtpExpiredException` → 400, `TooManyAttemptsException` → 429, `ResendTooSoonException` → 429 — a separate set from user-service's (Section 3.3), same shape convention, no shared class.
 
-Confirmed against the real v4 file: `NotificationRequest` is `{orderId, email, message}` — a free-text `message` field already exists, so no DTO change is needed here. Only the **`PAID` path's message content** changes: instead of v4's short success text, order-service builds a full itemized bill — order id, each line item (product name snapshot, quantity, price snapshot), and the total — and sends that as `message`. `PAYMENT_FAILED` and `PAYMENT_PENDING_RETRY` notifications keep v4's/v5's existing short-text messages unchanged; there's no itemized bill to send for an order that didn't succeed. notification-service's own code is untouched — it just sends whatever `message` it's given, same as it already does.
+### 4.4 New DTOs (package `com.ecommerce.orderservice.dto`)
 
----
+- `CheckoutOtpVerifyRequest`: otp (`@NotBlank`, `@Pattern(regexp = "^\\d{6}$")`)
+- `OtpSentResponse`: message (String) — order-service's own copy, same shape as user-service's, separately declared
 
-## 5. api-gateway change
+### 4.5 Interaction with v5's ownership interceptor (Section 2.4)
 
-No new routes — `/api/users/register/**` and `/api/orders/checkout/**` already fall under the existing `user-route`/`order-route` predicates from v2. The only change is to `JwtValidationFilter`'s whitelist:
+The three new `{userId}`-scoped paths above replace the old single pattern in the interceptor's registered path list:
+- `POST /api/orders/checkout/{userId}/initiate`
+- `POST /api/orders/checkout/{userId}/verify-otp`
+- `POST /api/orders/checkout/{userId}/resend-otp`
 
-- `POST /api/users/register/verify-otp` — **public, add to whitelist** (same reasoning as `/api/users/register` itself: no account exists yet, there's no JWT to check).
-- `POST /api/users/register/resend-otp` — **public, add to whitelist**, same reasoning.
-- `POST /api/orders/checkout/**` (start, verify-otp, resend-otp) — **no whitelist change** — these stay in the authenticated set, exactly like checkout already was in v4/v5. A logged-in user's own JWT is required, and the existing ownership interceptor (Section 4.3) applies unchanged.
+No change to the interceptor's logic itself. The v5 admin bypass (`X-User-Role: ADMIN` skips the mismatch check) carries forward unchanged onto all three — this is inherited behavior from how v5 originally scoped the bypass across order-service generally, not a new decision made in this version.
 
----
+### 4.6 Named breaking change
 
-## 6. frontend-service changes
+`POST /api/orders/checkout/{userId}` (the v1–v5 single-step endpoint) is **removed**, not deprecated-and-kept. Any test, client, or checklist item referencing that exact contract (including several items in `architecture-v5.md` Section 10) needs updating to the new three-step flow. This is stated explicitly per `promptrule.md`'s consistency rules — it is a deliberate scope decision for this version, not an oversight.
 
-| Page | Change | Calls |
-|---|---|---|
-| `register.html` | unchanged form itself; on submit, redirects to new `register-otp.html` instead of a success page | user-service `POST /api/users/register` through the gateway |
-| `register-otp.html` | **new** — 6-digit code entry form, plus a "resend code" action. Resend button is disabled client-side for 30s after each send (small, deliberate exception to v1's "no JS" rule — a plain countdown display only; the actual 30-second rule is still enforced server-side, the button being disabled early is UX polish, not the control) | user-service `POST /api/users/register/verify-otp`, `POST /api/users/register/resend-otp` |
-| `cart.html` → checkout | unchanged from v4 — the card-entry form (Section 8.2 of v4) still validates locally and its fields still go nowhere beyond that validation, per v4's explicit boundary. Once validation passes, the frontend calls order-service's checkout-start endpoint with no body (same as today), then redirects to new `checkout-otp.html` instead of straight to `order-confirmation.html` | order-service `POST /api/orders/checkout/{userId}` (no body) through the gateway |
-| `checkout-otp.html` | **new** — same shape as `register-otp.html`: code entry + 30s-gated resend | order-service `POST /api/orders/checkout/{userId}/verify-otp`, `.../resend-otp` |
-| `order-confirmation.html` | **changed** — now renders the itemized bill (line items, quantities, prices, total) matching 4.4's richer email content, instead of v1's plain confirmation | rendered from the response of `verify-otp`, no new call |
+### 4.7 What this does not add
 
-New frontend DTOs: `RegisterOtpForm`, `CheckoutOtpForm` (both just `{otp: String}`, possibly `{email}` / implicit userId-from-session respectively). `AuthController` gains the two register-OTP routes; the checkout controller (`OrderController`, per the manifest's Part B naming) gains the two checkout-OTP routes. No new exception classes expected beyond translating the new 400/410/423/429 responses into user-facing error messages on the same OTP-entry template — reuse `WebExceptionHandler`'s existing pattern.
+No re-validation of cart contents beyond what the existing stock-check inside checkout logic already does naturally by operating on the live cart at verify-time — no new snapshot or lock is taken between initiate and verify. If the cart changes in that window, the existing v2 stock-check behaves exactly as it always has.
 
 ---
 
-## 7. Known limitations (intentional, fixed in later versions or accepted trade-offs)
+## 5. notification-service — OTP email endpoint
 
-- No cleanup job for abandoned `PendingRegistration` or `CheckoutOtp` rows (user never completes the OTP step) — they just sit. A repeat attempt with the same email/order naturally overwrites or supersedes the stale row, consistent with the project's existing tolerance for this class of gap (see v4's accepted user/product orphan gaps).
-- OTP delivery itself is not verified/retried — if notification-service's send silently fails, the user only discovers it via "resend" after 30 seconds, same fail-open spirit as recommendation-service's v3 behavior, just not formalized with the same language.
-- No rate-limiting beyond the per-flow 30-second resend cooldown and 5-attempt lock — no IP-level or account-level throttling across multiple different emails/orders. Out of scope for this version.
+### 5.1 New DTO (package `com.ecommerce.notificationservice.dto`)
+
+`OtpEmailRequest`: email (`@Email`, `@NotBlank`), otp (`@NotBlank`, `@Pattern(regexp = "^\\d{6}$")`), purpose (`@NotBlank` — either `"REGISTRATION"` or `"CHECKOUT_VERIFICATION"`, used only to vary the email subject line, not stored, not branched into different mail-sending code paths beyond that one string)
+
+### 5.2 New endpoint
+
+| Method | Path | Purpose | Notes |
+|---|---|---|---|
+| POST | `/api/notifications/otp` | send an OTP email | body: `OtpEmailRequest`, `@Valid`. Builds a `SimpleMailMessage`: `from` = configured `spring.mail.username` (unchanged v4 pattern), `to` = `email`, subject = `"Verify your registration"` or `"Confirm your payment"` depending on `purpose`, text = `"Your OTP is " + otp + ". It is valid for 5 minutes. If you did not request this, you can safely ignore this email."` Same try/catch-log-never-throw pattern as v4's existing `sendNotification` — always returns **201** regardless of actual send success, same INFO-level logging discipline. No new exception, no `GlobalExceptionHandler` entry — same "nothing else for one to catch" reasoning v4 already stated still holds. |
+
+### 5.3 Existing endpoint — unchanged, but fed differently
+
+`POST /api/notifications` (v4) is **not modified** in this version. Its `message` field is still a plain `String` — what changes is what order-service puts into that string at the existing checkout-completion call sites (Section 6). No DTO change, no notification-service code change for this part.
 
 ---
 
-## 8. Testing checklist before calling v6 "done"
+## 6. Bill-summary email content (order-service change only)
 
-- [ ] Register with a new email → no `User` row created yet, `PendingRegistration` row exists, OTP email received
-- [ ] Submit correct OTP → `User` row created, `PendingRegistration` row deleted, can log in immediately after
-- [ ] Submit wrong OTP → 400, `attempts` increments; after 5 wrong attempts → 423, further verify attempts rejected until resend
-- [ ] Wait past 5 minutes, submit correct OTP → 410 (expired), must resend
-- [ ] Click resend before 30s have passed → 429; after 30s → succeeds, new OTP received, `attempts` reset to 0
-- [ ] Registering the same email twice before verifying the first → old `PendingRegistration` replaced, only the newest OTP works
-- [ ] Attempt registering with an email that already has a real `User` account → 409, unchanged from v1
-- [ ] Submit checkout on a non-empty cart → order status `OTP_PENDING`, no stock decrement yet, no payment-service call yet (confirm via product-service that stock is untouched), OTP email received, no card fields present anywhere in the checkout-start request body
-- [ ] Submit checkout on an empty cart → 400, exactly as v1, no OTP sent, no `CheckoutOtp` row created
-- [ ] Submit correct checkout OTP → v4's full flow now runs (stock validates and decrements, status → `PENDING_PAYMENT`, payment-service called, order reaches `PAID`/`PAYMENT_FAILED`, or `PAYMENT_PENDING_RETRY` if payment-service is down), `CheckoutOtp` row deleted
-- [ ] `PAID` path's email/confirmation page shows the full itemized bill; `PAYMENT_FAILED`/`PAYMENT_PENDING_RETRY` paths still show v4's/v5's existing short message, unchanged
-- [ ] Wrong/expired/too-many-attempts checkout OTP behave identically to the registration checks above (400/410/423)
-- [ ] Checkout OTP resend follows the same 30s cooldown
-- [ ] Final confirmation email (and `order-confirmation.html`) shows the full itemized bill, not the old one-line message
-- [ ] Attempt to hit `verify-otp`/`resend-otp` for another user's `{userId}` while logged in as someone else → blocked by v5's existing ownership interceptor, unchanged
-- [ ] `POST /api/users/register/verify-otp` and `resend-otp` work through the gateway with **no** token present; `POST /api/orders/checkout/**` OTP endpoints correctly return 401 without a token
+Where `OrderService` (v4) already builds a `NotificationRequest` at the end of a successful or failed checkout, the `message` field's construction changes from a one-line sentence to a multi-line plain-text summary. `SimpleMailMessage` supports multi-line text natively — no notification-service change needed, this is string-building inside order-service only.
+
+**On `PAID`:**
+```
+Order #<id> — Payment successful
+
+Items:
+- <productNameSnapshot> x<quantity> @ $<priceSnapshot> = $<lineTotal>
+- ...
+
+Total: $<total>
+
+Thank you for your order.
+```
+
+**On `PAYMENT_FAILED`:**
+```
+Order #<id> — Payment failed
+
+Your payment could not be processed. The items below have been returned to stock and you have not been charged.
+
+Items:
+- <productNameSnapshot> x<quantity> @ $<priceSnapshot>
+- ...
+
+Attempted total: $<total>
+
+Please try checking out again.
+```
+
+`PAYMENT_PENDING_RETRY` (v5): notification behavior for this status is unchanged from v5 — this section only touches the message content of the two call sites v4 already had (PAID, PAYMENT_FAILED). Whether a pending-retry notification exists at all was out of scope in v5 and stays out of scope here.
+
+---
+
+## 7. api-gateway
+
+No new routes — the existing `user-route` (`Path=/api/users/**`) and `order-route` (`Path=/api/orders/**`) already match every new path in this version.
+
+**Whitelist changes (`JwtValidationFilter`):**
+- Add `POST /api/users/register/verify` and `POST /api/users/register/resend-otp` to the public whitelist, alongside the existing `POST /api/users/register` and `POST /api/users/login` — a user isn't authenticated yet during registration, so these must stay open, same reasoning as every whitelist entry since v2.
+- The three new order-service checkout endpoints (`initiate`, `verify-otp`, `resend-otp`) are **not** whitelisted — same authenticated-only status the old single checkout endpoint always had.
+
+---
+
+## 8. frontend-service
+
+### 8.1 New DTOs (package `com.ecommerce.frontendservice.dto`)
+
+- `RegisterOtpForm`: email (String), otp (String, `@NotBlank`, `@Pattern(regexp = "^\\d{6}$")`)
+- `CheckoutOtpForm`: otp (String, `@NotBlank`, `@Pattern(regexp = "^\\d{6}$")`)
+
+### 8.2 Feign client changes
+
+**`UserServiceClient`** — the existing method targeting `POST /api/users/register` changes its return type from `UserResponse` to `OtpSentResponse` (named breaking change, matches Section 3.2). Add two new methods: `POST /api/users/register/verify` (returns `UserResponse`), `POST /api/users/register/resend-otp` (returns `OtpSentResponse`).
+
+**`OrderServiceClient`** — the existing `checkout(userId)` method is retired and replaced with `initiateCheckout(userId)` targeting `POST /api/orders/checkout/{userId}/initiate` (returns `OtpSentResponse`). Add: `verifyCheckoutOtp(userId, CheckoutOtpVerifyRequest)` targeting `.../verify-otp` (returns `OrderResponse`), `resendCheckoutOtp(userId)` targeting `.../resend-otp` (returns `OtpSentResponse`).
+
+### 8.3 `AuthController` changes (registration)
+
+- `POST /register`: now calls `userServiceClient.initiateRegistration(request)`. On success, add `email` to the Model, return view `register-verify-otp` (new template) instead of the old redirect-to-login. On 409 (`EmailAlreadyExistsException`, unchanged exception) → redisplay `register.html` with the error, exactly as before.
+- New `POST /register/verify-otp`: reads `RegisterOtpForm` (email carried as a hidden field, otp entered by the user) → calls `userServiceClient.verifyRegistrationOtp(...)`. On success → redirect to `/login` with a flash message, "Registration complete — please log in." On `InvalidOtpException`/`OtpExpiredException` (400) → redisplay `register-verify-otp.html` with an error, keeping the email hidden field. On `TooManyAttemptsException` (429) → redisplay with a distinct message, "Too many incorrect attempts — please register again," plus a plain link back to `/register` (no auto-redirect — this project has never used JavaScript, since v1, and that constraint is unchanged here).
+- New `POST /register/resend-otp`: reads the hidden `email` field → calls `userServiceClient.resendRegistrationOtp(email)` → redisplays `register-verify-otp.html` with either a "a new code has been sent" confirmation or, on `ResendTooSoonException` (429), a "please wait a little longer before requesting another code" message. Plain server round trip — no live countdown timer, since that would require JavaScript. The 30-second rule (Section 2) is enforced by the server on every click; the page simply tells the user if they clicked too soon.
+
+### 8.4 `OrderController` changes (checkout)
+
+- Existing `POST /checkout` (card form submit, v4): after `CheckoutForm` validation passes (unchanged Bean Validation logic), replace the call to `orderServiceClient.checkout(userId)` with `orderServiceClient.initiateCheckout(userId)`. On success → render new view `checkout-otp`, re-adding `cart`/`cartTotal` to the Model (same values `GET /checkout` already computes) plus a blank `CheckoutOtpForm` — this does **not** go straight to `order-confirmation` anymore.
+- New `POST /checkout/verify-otp`: reads `CheckoutOtpForm` → calls `orderServiceClient.verifyCheckoutOtp(userId, form)`. On success → same existing v4 success path, return view `order-confirmation` with `order` in the Model. On the existing `FeignException.Conflict`/`FeignException.BadRequest` mappings (`InsufficientStockException`/`EmptyCartException` — still possible, since stock is only actually touched now, at verify-time) → same existing flash-error-and-redirect-to-`/cart` behavior, unchanged from v4. On `InvalidOtpException`/`OtpExpiredException` → redisplay `checkout-otp.html` with an error, re-fetching `cart`/`cartTotal` (same re-fetch-on-redisplay pattern the existing card-validation-failure branch already uses). On `TooManyAttemptsException` → redisplay with "too many attempts — please start checkout again" plus a plain link back to `/checkout` (which cleanly re-initiates, since `GET /checkout` already guards for an empty cart).
+- New `POST /checkout/resend-otp`: calls `orderServiceClient.resendCheckoutOtp(userId)` → redisplays `checkout-otp.html` with a confirmation or wait-message, same pattern as registration's resend.
+
+### 8.5 New templates
+
+`register-verify-otp.html`, `checkout-otp.html`. Same header-fragment inclusion and no-JavaScript constraint as every template since v1. The resend action is a plain link/button posting to the resend endpoint — no inline countdown; a too-early click simply redisplays the page with the server's message, the same way every other validation error in this project already surfaces.
+
+`order-confirmation.html` needs no structural change — it already displays order id, items, and status per v4/v5. The bill-summary email (Section 6) is a separate artifact delivered to the user's inbox, not something the page itself renders differently.
+
+---
+
+## 9. Known limitations (intentional, not solved here)
+
+- `PendingRegistration` and `CheckoutOtp` rows are never cleaned up by a background job. An abandoned attempt just sits until overwritten by a fresh initiate call for the same email/userId. Accepted, consistent with this project's existing tolerance for this class of gap (same shape as v5's orphaned-orders-after-user-deletion gap).
+- OTP email delivery failures are silent, inherited from notification-service's fail-open policy since v4. If an email genuinely never arrives, the user's only recourse is Resend — there's no delivery confirmation or alternate channel.
+- No CAPTCHA or IP-based rate limiting. The 30-second cooldown and 5-attempt cap are per-pending-record (per email, per userId), not per-client — a scripted caller could still spread requests across many different identities. Accepted at this project's scale.
+- The old `POST /api/orders/checkout/{userId}` and the old immediate-user-creation behavior of `POST /api/users/register` are both retired (Sections 4.6, 3.2) — this is a deliberate, named breaking change, not an oversight, and any prior checklist item referencing the old contracts needs updating.
+
+---
+
+## 10. Testing checklist before calling v6 "done"
+
+- [ ] `POST /api/users/register` with a new email returns 200 `OtpSentResponse`, **not** 201 — confirm no `User` row exists yet in the database
+- [ ] The registration OTP email actually arrives, with the correct 6-digit code
+- [ ] `POST /api/users/register/verify` with the correct OTP returns 201 `UserResponse`, and the `User` row now exists; the `PendingRegistration` row is gone
+- [ ] `POST /api/users/register/verify` with a wrong OTP returns 400, and doing so 5 times in a row returns 429 on the 5th and deletes the pending row — confirm a 6th attempt (even with the right code) now returns 404
+- [ ] `POST /api/users/register/verify` after waiting 6 minutes past the original OTP returns 400 `OtpExpiredException`
+- [ ] `POST /api/users/register/resend-otp` called twice within 30 seconds returns 429 on the second call; called again after 30+ seconds succeeds and the new code (not the old one) is required to verify
+- [ ] `POST /api/users/register` for an email that's already a real registered user still returns 409, unchanged from v1
+- [ ] Add an item to cart, proceed to checkout, submit a valid card → confirm you land on the new OTP page, **not** `order-confirmation`, and confirm no stock has been decremented yet
+- [ ] The checkout OTP email actually arrives
+- [ ] Submitting the correct checkout OTP proceeds exactly as v4/v5's checkout always did — stock decrements, payment-service is called, `order-confirmation` renders — and the email received is now the full bill summary (Section 6), not the old one-line sentence
+- [ ] Submitting a wrong checkout OTP, an expired one, and 5 wrong attempts in a row all behave the same way as the registration flow's equivalents above
+- [ ] Checkout's resend-OTP 30-second cooldown behaves the same way as registration's
+- [ ] Confirm `POST /api/orders/checkout/{userId}/initiate` (and the other two new checkout endpoints) still reject a mismatched `{userId}` for a CUSTOMER-role token with 403, and still allow it for an ADMIN-role token, per Section 4.5
+- [ ] Confirm `POST /api/users/register/verify` and `/resend-otp` work through the gateway with **no** Authorization header (they're whitelisted); confirm the checkout OTP endpoints still return 401 through the gateway with no token
+- [ ] Attempt `POST /api/orders/checkout/{userId}` (the old v1–v5 path) — confirm it now 404s at the gateway/service level, since the route pattern still matches but no controller method handles it anymore
+- [ ] Full end-to-end walkthrough: register → verify OTP → log in → browse → add to cart → checkout → verify OTP → land on order-confirmation → check inbox for the full bill-summary email — zero unhandled errors anywhere in the chain
