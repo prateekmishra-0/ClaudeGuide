@@ -1,0 +1,92 @@
+# Prompt for Amazon Q — Generate Project Documentation
+
+Copy everything below the line into Amazon Q (chat, with your full workspace/repo open so it can actually scan the code). It's written as one prompt that asks for two deliverables in sequence, so Q builds context before going deep.
+
+---
+
+## PROMPT STARTS HERE
+
+You are documenting a multi-module Spring Boot microservices e-commerce project. It has grown across 6 iterations (v1 → v6), currently consisting of these services:
+
+- `eureka-server` (8761) — service registry
+- `api-gateway` (8000) — Spring Cloud Gateway, single entry point, JWT validation, role/user-id header forwarding
+- `product-service` (8081) — Postgres `product_db`, Category + Product + ProductView entities, seller ownership
+- `user-service` (8082) — Postgres `user_db`, User entity, JWT issuance, role selection (CUSTOMER/SELLER/ADMIN)
+- `order-service` (8083) — Postgres `order_db`, Order + OrderItem entities, cart/checkout/payment/notification orchestration
+- `recommendation-service` (8084) — stateless, co-purchase + co-view scoring
+- `payment-service` (8085) — Postgres, mock deterministic payment processing
+- `notification-service` (8086) — no DB, sends real email via Gmail SMTP
+- `frontend-service` (8080) — Thymeleaf, no JS, calls everything through the gateway
+
+Before writing anything, **scan the actual codebase** (all `pom.xml`/`build.gradle` files, all `@RestController`/`@Service`/`@Entity`/`@Configuration`/`@FeignClient` classes, `application.yml`/`application.properties` in every module, and every custom filter/interceptor/exception class) so that what you produce reflects the real, current state of the code — not a guess based on service names alone. If something below doesn't match what you find in the repo, trust the repo and flag the mismatch to me instead of silently "correcting" your output to match this prompt.
+
+Produce **two separate markdown documents**, generated one at a time — finish and show me Document 1 in full before starting Document 2.
+
+---
+
+### DOCUMENT 1 — Project Overview (architecture + end-to-end flow)
+
+Audience: me, re-reading my own project months later, or someone technical seeing it for the first time. Depth over brevity, but no filler.
+
+Structure it as:
+
+1. **One-paragraph elevator pitch** — what the system does, in plain English.
+2. **Service inventory table** — service name, port, datastore (or "none"), one-line responsibility, and what it depends on / is depended on by.
+3. **Request-path topology** — draw (in a Mermaid diagram, plus a short prose explanation) how a request actually travels: browser → frontend-service → api-gateway → backend service, and separately, which backend services call each other directly via Eureka/Feign (bypassing the gateway) and why that split exists (internal-secret trust boundary vs. gateway JWT boundary).
+4. **Auth & trust model, explained end to end**:
+   - How JWT is issued, what claims it carries, how long it lives
+   - What the gateway validates vs. what it deliberately doesn't (downstream services trust the gateway's word)
+   - The two independent security mechanisms in play — JWT (per-user identity) and the shared internal secret (per-request "came through a trusted path") — and why both exist and neither replaces the other
+   - How role (`CUSTOMER` / `SELLER` / `ADMIN`) flows from the JWT into `X-User-Role`, and where it's actually enforced (list every interceptor/filter that reads it and what it gates)
+   - The ownership-enforcement layer (`X-User-Id` vs. path `{userId}`) and its admin bypass
+5. **Major end-to-end flows, narrated step by step** (numbered steps, naming the actual controller/service/repository classes involved at each hop — pull the real class names from the code, don't invent generic ones):
+   - Registration & login (including role selection and role-mismatch handling)
+   - Browse → add to cart (including the snapshot-vs-live-price behavior and the "same product added twice" convergence logic)
+   - Checkout, full version: stock validation → stock decrement → payment call → email lookup → notification → success/failure branching → restock-on-failure compensation → circuit-breaker fallback to `PAYMENT_PENDING_RETRY`
+   - Recommendations: co-purchase counting, co-view counting, the combined weighted score formula, category fallback, and the fail-open behavior when upstream calls fail
+   - Admin panel: product/category/stock management, user management, "view buyers" feature, and the ownership/role checks guarding each
+   - Seller flow: self-registration as a seller, product ownership via `sellerId`, ownership checks on writes, and the cascade-delete-on-seller-removal flow (including why that delete is NOT fail-open, unlike almost everything else in the system)
+6. **Resilience & failure-handling summary** — a table of every circuit breaker / fallback / fail-open decision in the system, what triggers it, and what it does instead of failing loudly.
+7. **Known, accepted limitations** — pull these together from across the whole system (in-memory nothing left behind, no soft delete, no cascade for deleted customers' orders vs. the seller cascade, static unrotatable internal secret, no refresh tokens, no role-promotion endpoint, etc.) so the "why isn't X handled" questions are answered in one place.
+
+Use tables and a Mermaid sequence/flow diagram where they clarify things faster than prose. Keep prose sections tight — this should be comprehensive, not padded.
+
+---
+
+### DOCUMENT 2 — Annotation & Keyword Reference (deep dive)
+
+Audience: me, trying to understand *every annotation actually used anywhere in this codebase* and, critically, **why this specific project uses it the way it does** — not a generic Javadoc definition copy-pasted from the internet.
+
+Method:
+1. Grep/scan every source file across every module for annotations — Spring (`@RestController`, `@Service`, `@Repository`, `@Configuration`, `@Component`, `@Bean`, `@Autowired`, `@RequestMapping`/`@GetMapping`/`@PostMapping`/`@PutMapping`/`@DeleteMapping`, `@PathVariable`, `@RequestBody`, `@RequestHeader`, `@Valid`, `@RequestParam`), Spring Cloud (`@EnableEurekaClient`/`@EnableDiscoveryClient`, `@FeignClient`, `@EnableFeignClients`, `@LoadBalanced`), JPA (`@Entity`, `@Table`, `@Id`, `@GeneratedValue`, `@Column`, `@ManyToOne`, `@JoinColumn`, `@PrePersist`, `@PreUpdate`), Bean Validation (`@NotNull`, `@NotBlank`, `@Email`, `@Min`, `@DecimalMin`, `@Pattern`, `@AssertTrue`, `@Size`), Lombok (`@Data`, `@Getter`/`@Setter`, `@NoArgsConstructor`/`@AllArgsConstructor`, `@Builder`), exception-handling (`@RestControllerAdvice`, `@ExceptionHandler`, `@ResponseStatus`), Resilience4j (`@CircuitBreaker`, `@Retry`), Swagger/OpenAPI (`@OpenAPIDefinition`, `@Operation`, `@Schema` if present), and any project-specific ones I may have missed.
+2. Deduplicate by annotation, but **cite every distinct usage context** — the same annotation often means something slightly different depending on where it sits (e.g. `@Order(1)` on the internal-secret filter vs. anywhere else it might appear).
+
+For each annotation, produce an entry with this exact shape:
+
+- **Annotation**: name
+- **Library / source**: (Spring Web, Spring Data JPA, Bean Validation, Lombok, Resilience4j, project-custom, etc.)
+- **What it does, generically**: 1–2 sentences, textbook-accurate
+- **Where it's used in this project**: every class/file it appears in (group by service if it appears in multiple)
+- **Why it's used *here*, specifically**: tie it to an actual design decision from this project — e.g. `@Column(unique = true)` on `Category.name` is paired with a service-layer `existsByName` pre-check *and* a `DataIntegrityViolationException` handler because relying on either alone leaves either a bad error message or a race-condition gap; `@Order(1)` on the internal-secret filter guarantees it runs before the JWT/dispatcher logic so a rejected request never reaches a controller; `fetch = FetchType.LAZY` on `OrderItem.order` avoids pulling the parent order eagerly on every item load, etc.
+- **Gotchas / things that would break if removed or misused**: be concrete — e.g. removing the two-layer uniqueness check reintroduces the race condition; forgetting `@Order(1)` on a new filter could let a request slip past the internal-secret check before it's evaluated.
+
+Group the final document by layer, in this order, so it reads like a tour of the stack:
+1. Service discovery & inter-service communication annotations (`@EnableEurekaClient`, `@FeignClient`, `@EnableFeignClients`, `@LoadBalanced`)
+2. Web layer annotations (`@RestController`, mapping annotations, `@PathVariable`, `@RequestBody`, `@RequestHeader`, `@RequestParam`)
+3. Validation annotations (Bean Validation set, plus custom `@AssertTrue` methods like the card-expiry check)
+4. Persistence/JPA annotations (`@Entity` through `@PreUpdate`)
+5. Exception-handling annotations (`@RestControllerAdvice`, `@ExceptionHandler`)
+6. Resilience annotations (`@CircuitBreaker`, `@Retry`, fallback method wiring)
+7. Lombok annotations
+8. Any project-specific meta-annotations or custom stereotype annotations, if present
+9. A final cross-cutting table: **filters vs. interceptors used in this project** (not annotations, but closely related plumbing that the annotations above hook into) — list every `OncePerRequestFilter` and every `HandlerInterceptor` across all services, its `@Order`/registration, what it checks, and what it does on failure. This table is the fastest way to answer "what actually gates this endpoint?" for any given path.
+
+---
+
+A few ground rules for both documents:
+- Don't invent class names, package names, or file paths — pull them from the actual repo. If you're inferring rather than reading, say so.
+- Where this project deliberately diverges from a "textbook" pattern (raw foreign-key IDs instead of JPA relationships across services, PUT instead of PATCH for stock adjustment, synchronous REST instead of a message broker for notifications, a shared static secret instead of mTLS, etc.), call out *that it's a deliberate simplification* rather than describing it as if it were unaware of the alternative.
+- Prefer tables over paragraphs wherever there's more than 3 comparable items.
+- Output both documents as clean markdown I can save directly as `.md` files — no need to wrap them in any special formatting beyond standard markdown.
+
+## PROMPT ENDS HERE
